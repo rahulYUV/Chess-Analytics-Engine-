@@ -1,11 +1,25 @@
+import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { GoogleLoginButton } from "./GoogleLoginButton";
+import { AuthModal } from "./AuthModal";
 import { UserMenu } from "./UserMenu";
-import { Bell } from "lucide-react";
+import { Bell, LineChart } from "lucide-react";
 import { motion } from "motion/react";
+import { Link } from "react-router-dom";
 
 export const Navbar = () => {
     const { isAuthenticated, isLoading, user } = useAuth();
+    const [authOpen, setAuthOpen] = useState(false);
+    const [authMode, setAuthMode] = useState<"login" | "register">("login");
+
+    const openLogin = () => {
+        setAuthMode("login");
+        setAuthOpen(true);
+    };
+    const openRegister = () => {
+        setAuthMode("register");
+        setAuthOpen(true);
+    };
 
     return (
         <motion.nav
@@ -17,23 +31,30 @@ export const Navbar = () => {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex items-center justify-between h-16">
                     {/* Logo / Brand - Text Only */}
-                    <div className="flex items-center">
-                        <span className="text-xl font-bold text-neutral-900 dark:text-white">
-                            ChessStat
-                        </span>
-                    </div>
+                    <Link to="/" className="text-xl font-bold text-neutral-900 dark:text-white">
+                        ChessStat
+                    </Link>
 
                     {/* Navigation Links - Center */}
                     <div className="hidden md:flex items-center gap-8">
-                        <NavLink href="#home" active>
+                        <NavLink to="/" active>
                             Home
                         </NavLink>
                         <NavLink href="#analytics">Analytics</NavLink>
                         <NavLink href="#leaderboard">Leaderboard</NavLink>
+                        {isAuthenticated && user?.chessUsername && (
+                            <Link
+                                to="/analysis"
+                                className="text-sm font-medium transition-colors text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white inline-flex items-center gap-1.5"
+                            >
+                                <LineChart className="h-4 w-4" />
+                                Analyze
+                            </Link>
+                        )}
                     </div>
 
                     {/* Right Side - Auth & User */}
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
                         {isAuthenticated && user ? (
                             <>
                                 {/* Notification Bell */}
@@ -73,34 +94,48 @@ export const Navbar = () => {
                                 </div>
                             </>
                         ) : (
-                            !isLoading && <GoogleLoginButton />
+                            !isLoading && (
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={openLogin}
+                                        className="text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white px-3 py-2 rounded-full transition-colors"
+                                    >
+                                        Log in
+                                    </button>
+                                    <GoogleLoginButton onClick={openRegister} label="Sign up" />
+                                </div>
+                            )
                         )}
                     </div>
                 </div>
             </div>
+
+            <AuthModal
+                open={authOpen}
+                onOpenChange={setAuthOpen}
+                initialMode={authMode}
+            />
         </motion.nav>
     );
 };
 
 // Navigation Link Component
 const NavLink = ({
+    to,
     href,
     children,
     active = false,
 }: {
-    href: string;
+    to?: string;
+    href?: string;
     children: React.ReactNode;
     active?: boolean;
 }) => {
-    return (
-        <a
-            href={href}
-            className={`text-sm font-medium transition-colors hover:text-neutral-900 dark:hover:text-white ${active
-                ? "text-neutral-900 dark:text-white"
-                : "text-neutral-600 dark:text-neutral-400"
-                }`}
-        >
-            {children}
-        </a>
-    );
+    const className = `text-sm font-medium transition-colors hover:text-neutral-900 dark:hover:text-white ${active
+        ? "text-neutral-900 dark:text-white"
+        : "text-neutral-600 dark:text-neutral-400"
+        }`;
+
+    if (to) return <Link to={to} className={className}>{children}</Link>;
+    return <a href={href} className={className}>{children}</a>;
 };
