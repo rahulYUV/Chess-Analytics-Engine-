@@ -39,8 +39,12 @@ app.use((req, res) => {
 
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error("Unhandled Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Unhandled Error:", err?.message || err);
+    if (err?.stack) console.error(err.stack);
+    res.status(500).json({
+        error: "Internal Server Error",
+        message: err?.message || "Unknown error",
+    });
 });
 
 const server = app.listen(port, () => {
