@@ -86,4 +86,41 @@ export class PlayerController {
             handleError(res, error);
         }
     }
+
+    /**
+     * List games for a player in a given year/month. Thin proxy in front of
+     * chessService.listGamesForUser so the frontend can fetch through the
+     * same origin (avoids CORS, gains server-side caching and rate limiting).
+     */
+    static async getPlayerGames(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            if (!id) return res.status(400).json({ error: "Player ID is required" });
+
+            const now = new Date();
+            const year = parseInt((req.query.year as string) || String(now.getFullYear()), 10);
+            const month = parseInt((req.query.month as string) || String(now.getMonth() + 1), 10);
+
+            if (month < 1 || month > 12) {
+                return res.status(400).json({ error: "month must be between 1 and 12" });
+            }
+
+            const data = await chessService.listGamesForUser(id, year, month);
+            res.json(data);
+        } catch (error) {
+            handleError(res, error);
+        }
+    }
+
+    static async getPlayerGamesLastThreeMonths(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            if (!id) return res.status(400).json({ error: "Player ID is required" });
+
+            const data = await chessService.listGamesForLastThreeMonths(id);
+            res.json(data);
+        } catch (error) {
+            handleError(res, error);
+        }
+    }
 }

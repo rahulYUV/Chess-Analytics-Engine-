@@ -5,6 +5,93 @@ import { validateChessComUsername, getChessComPlayerInfo } from "../utils/chessc
 
 export class AuthController {
     /**
+     * Register a new user with email + password, then issue tokens
+     * (auto-sign-in) exactly like the OAuth callback does.
+     */
+    static async register(req: Request, res: Response) {
+        try {
+            console.log("[register] called, body:", JSON.stringify(req.body));
+            const { username, email, password } = req.body || {};
+
+            if (typeof username !== "string" || typeof email !== "string" || typeof password !== "string") {
+                return res.status(400).json({ error: "username, email, and password are required" });
+            }
+
+            const user = await AuthService.registerWithEmail({ username, email, password });
+
+            const { accessToken, refreshToken } = generateTokenPair(user);
+            await AuthService.saveRefreshToken(user._id.toString(), refreshToken);
+
+            console.log(`User registered: ${user.email}`);
+
+            return res.status(201).json({
+                success: true,
+                accessToken,
+                refreshToken,
+                user: {
+                    id: user._id,
+                    email: user.email,
+                    username: user.username,
+                    name: user.name,
+                    avatar: user.avatar,
+                    chessUsername: user.chessUsername,
+                    role: user.role,
+                    preferences: user.preferences,
+                    createdAt: user.createdAt,
+                    lastLogin: user.lastLogin,
+                },
+            });
+        } catch (error: any) {
+            // Pass through our statusCode-tagged errors, default to 500
+            const statusCode = error.statusCode || 500;
+            const message = error.message || "Failed to register";
+            return res.status(statusCode).json({ error: message });
+        }
+    }
+
+    /**
+     * Log in with email + password.
+     */
+    static async login(req: Request, res: Response) {
+        try {
+            const { email, password } = req.body || {};
+
+            if (typeof email !== "string" || typeof password !== "string") {
+                return res.status(400).json({ error: "email and password are required" });
+            }
+
+            const user = await AuthService.loginWithEmail(email, password);
+
+            const { accessToken, refreshToken } = generateTokenPair(user);
+            await AuthService.saveRefreshToken(user._id.toString(), refreshToken);
+
+            console.log(`User logged in: ${user.email}`);
+
+            return res.status(200).json({
+                success: true,
+                accessToken,
+                refreshToken,
+                user: {
+                    id: user._id,
+                    email: user.email,
+                    username: user.username,
+                    name: user.name,
+                    avatar: user.avatar,
+                    chessUsername: user.chessUsername,
+                    role: user.role,
+                    preferences: user.preferences,
+                    createdAt: user.createdAt,
+                    lastLogin: user.lastLogin,
+                },
+            });
+        } catch (error: any) {
+            const statusCode = error.statusCode || 500;
+            const message = error.message || "Failed to log in";
+            return res.status(statusCode).json({ error: message });
+        }
+    }
+
+    /**
      * Google OAuth Callback Handler
      * Handles both signup AND login (creates user if doesn't exist)
      */
@@ -14,7 +101,8 @@ export class AuthController {
             const user = req.user as any;
 
             if (!user) {
-                return res.redirect(`${process.env.CLIENT_URL}/auth/error?message=Authentication failed`);
+                console.error("Google callback: no user on req");
+                return res.redirect(`${process.env.CLIENT_URL}/auth/error?message=Authentication%20failed`);
             }
 
             // Generate JWT tokens
@@ -28,9 +116,12 @@ export class AuthController {
             // Redirect to frontend with tokens
             const redirectUrl = `${process.env.CLIENT_URL}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`;
             res.redirect(redirectUrl);
-        } catch (error) {
-            console.error("Google callback error:", error);
-            res.redirect(`${process.env.CLIENT_URL}/auth/error?message=Authentication failed`);
+        } catch (error: any) {
+            // Log the full error so we can diagnose 500s from the browser
+            console.error("Google callback error:", error?.message || error);
+            if (error?.stack) console.error(error.stack);
+            const msg = encodeURIComponent(error?.message || "Authentication failed");
+            res.redirect(`${process.env.CLIENT_URL}/auth/error?message=${msg}`);
         }
     }
 
