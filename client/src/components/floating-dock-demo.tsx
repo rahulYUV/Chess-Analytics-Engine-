@@ -29,6 +29,15 @@ interface FloatingDockDemoProps {
 export default function FloatingDockDemo({ onPlayerSelect }: FloatingDockDemoProps) {
     const links1 = [
         {
+            title: "rootr4hul",
+            icon: (
+                <div className="h-full w-full rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold">
+                    R4
+                </div>
+            ),
+            onClick: () => onPlayerSelect?.("rootr4hul"),
+        },
+        {
             title: "k1_rahul",
             icon: (
                 <img

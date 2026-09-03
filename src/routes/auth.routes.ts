@@ -2,8 +2,13 @@ import { Router } from "express";
 import passport from "passport";
 import { AuthController } from "../controllers/auth.controller";
 import { authMiddleware } from "../middleware/auth.middleware";
+import { databaseMiddleware } from "../middleware/database.middleware";
+import { authLimiter } from "../middleware/rate-limit.middleware";
 
 const router = Router();
+
+// Auth operations require MongoDB and should fail immediately if it is unavailable.
+router.use(databaseMiddleware);
 
 /**
  * @route   GET /auth/google
@@ -12,6 +17,7 @@ const router = Router();
  */
 router.get(
     "/google",
+    authLimiter,
     passport.authenticate("google", {
         scope: ["profile", "email"],
         session: false, // We're using JWT, not sessions
@@ -32,6 +38,22 @@ router.get(
     }),
     AuthController.googleCallback
 );
+
+/**
+ * @route   POST /auth/register
+ * @desc    Register a new user with email + password. Auto-signs in.
+ * @access  Public
+ */
+router.post("/register", authLimiter, AuthController.register);
+router.post("/signup", authLimiter, AuthController.register);
+
+/**
+ * @route   POST /auth/login
+ * @desc    Log in with email + password. Issues JWT pair.
+ * @access  Public
+ */
+router.post("/login", authLimiter, AuthController.login);
+router.post("/signin", authLimiter, AuthController.login);
 
 /**
  * @route   POST /auth/refresh

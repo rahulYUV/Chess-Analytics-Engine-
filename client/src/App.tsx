@@ -39,7 +39,9 @@ import { TeamSection } from "@/components/team-section"
 import { PlayfulTodolist } from "@/components/playful-todolist"
 import { Navbar } from "@/components/Navbar"
 import { AuthCallback } from "@/components/AuthCallback"
+import { AuthError } from "@/components/AuthError"
 import { ProfilePage } from "@/components/ProfilePage"
+import AnalysisPage from "@/components/AnalysisPage"
 import FloatingDockDemo from "@/components/floating-dock-demo"
 
 // --- Types ---
@@ -64,7 +66,7 @@ function Home() {
   const abortControllerRef = useRef<AbortController | null>(null) // To cancel in-flight requests
 
   useEffect(() => {
-    if (username) {
+    if (username && mode !== 'compare') {
       fetchData();
     } else {
       setData(null);
@@ -78,26 +80,29 @@ function Home() {
    * @param usernameOverride - Optional username to fetch directly (used for direct selection)
    */
   const fetchData = async (usernameOverride?: string) => {
-    // Abort previous request if is running
+    setError("")
+    const userToFetch = usernameOverride || username;
+
+    if (!userToFetch.trim()) {
+      setLoading(false)
+      setError("Please enter a username")
+      return
+    }
+
+    if (mode === 'compare' && !username2.trim()) {
+      setLoading(false)
+      setError("Please enter a second username for comparison")
+      return
+    }
+
+    // Abort previous request only after validation succeeds.
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    setError("")
     setData(null)
-    const userToFetch = usernameOverride || username;
-
-    if (!userToFetch.trim()) {
-      setError("Please enter a username")
-      return
-    }
-
-    if (mode === 'compare' && !username2.trim()) {
-      setError("Please enter a second username for comparison")
-      return
-    }
 
     setLoading(true)
     try {
@@ -476,6 +481,8 @@ function App() {
       <Route path="/" element={<Home />} />
       <Route path="/profile" element={<ProfilePage />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/auth/error" element={<AuthError />} />
+      <Route path="/analysis/*" element={<AnalysisPage />} />
     </Routes>
   )
 }

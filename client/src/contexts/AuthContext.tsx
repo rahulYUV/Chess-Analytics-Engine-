@@ -22,6 +22,16 @@ interface AuthContextType {
     isAuthenticated: boolean;
     isLoading: boolean;
     login: (accessToken: string, refreshToken: string) => void;
+    loginWithEmail: (email: string, password: string) => Promise<void>;
+    registerWithEmail: (
+        username: string,
+        email: string,
+        password: string
+    ) => Promise<void>;
+    updateProfile: (updates: {
+        name?: string;
+        chessUsername?: string | null;
+    }) => Promise<void>;
     logout: () => Promise<void>;
     refreshAccessToken: () => Promise<string | null>;
 }
@@ -87,12 +97,58 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     };
 
-    // Login
+    // Login (used by Google OAuth callback — tokens are already in hand)
     const login = async (newAccessToken: string, refreshToken: string) => {
         localStorage.setItem("accessToken", newAccessToken);
         localStorage.setItem("refreshToken", refreshToken);
         setAccessToken(newAccessToken);
         await fetchUserProfile(newAccessToken);
+    };
+
+    // Login with email + password — exchanges credentials for a token pair
+    const loginWithEmail = async (email: string, password: string) => {
+        const response = await axios.post(`${API_URL}/auth/login`, {
+            email,
+            password,
+        });
+        if (!response.data.success) {
+            throw new Error(response.data.error || "Login failed");
+        }
+        await login(response.data.accessToken, response.data.refreshToken);
+    };
+
+    // Register a new account with email + password, then auto-sign-in
+    const registerWithEmail = async (
+        username: string,
+        email: string,
+        password: string
+    ) => {
+        const response = await axios.post(`${API_URL}/auth/register`, {
+            username,
+            email,
+            password,
+        });
+        if (!response.data.success) {
+            throw new Error(response.data.error || "Registration failed");
+        }
+        await login(response.data.accessToken, response.data.refreshToken);
+    };
+
+    const updateProfile = async (updates: {
+        name?: string;
+        chessUsername?: string | null;
+    }) => {
+        const response = await axios.put(`${API_URL}/auth/me`, updates, {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            },
+        });
+
+        if (!response.data.success) {
+            throw new Error(response.data.error || "Profile update failed");
+        }
+
+        setUser(response.data.user);
     };
 
     // Logout
@@ -158,6 +214,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isAuthenticated: !!user,
         isLoading,
         login,
+        loginWithEmail,
+        registerWithEmail,
+        updateProfile,
         logout,
         refreshAccessToken,
     };

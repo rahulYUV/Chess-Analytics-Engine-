@@ -1,8 +1,10 @@
 import mongoose from "mongoose";
 
 export interface IUser extends mongoose.Document {
-    googleId: string;
+    googleId?: string;
+    username?: string;
     email: string;
+    passwordHash?: string;
     name: string;
     avatar?: string;
     chessUsername?: string;
@@ -22,9 +24,16 @@ const userSchema = new mongoose.Schema<IUser>(
     {
         googleId: {
             type: String,
-            required: true,
+            default: undefined,
+        },
+        username: {
+            type: String,
             unique: true,
-            index: true,
+            sparse: true,
+            trim: true,
+            minlength: 3,
+            maxlength: 25,
+            match: /^[a-zA-Z0-9_]+$/,
         },
         email: {
             type: String,
@@ -32,7 +41,10 @@ const userSchema = new mongoose.Schema<IUser>(
             unique: true,
             lowercase: true,
             trim: true,
-            index: true,
+        },
+        passwordHash: {
+            type: String,
+            select: false, // never return by default; load explicitly when needed
         },
         name: {
             type: String,
@@ -82,9 +94,18 @@ const userSchema = new mongoose.Schema<IUser>(
     }
 );
 
+// Keep Google IDs unique only when they actually exist.
+userSchema.index(
+    { googleId: 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            googleId: { $type: "string" },
+        },
+    }
+);
+
 // Indexes for better query performance
-userSchema.index({ email: 1 });
-userSchema.index({ googleId: 1 });
 userSchema.index({ createdAt: -1 });
 
 export const User = mongoose.model<IUser>("User", userSchema);

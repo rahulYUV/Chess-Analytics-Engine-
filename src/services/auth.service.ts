@@ -1,16 +1,116 @@
+import bcrypt from "bcryptjs";
 import { User, IUser } from "../models/User";
 import { generateTokenPair, verifyRefreshToken } from "../utils/jwt.utils";
 
+const BCRYPT_ROUNDS = 12;
+
 export class AuthService {
+    /**
+     * Register a new user with email + password. Returns the user doc.
+     * Throws on duplicate email/username.
+     */
+    static async registerWithEmail(input: {
+        username: string;
+        email: string;
+        password: string;
+    }): Promise<IUser> {
+        const username = input.username.trim();
+        const email = input.email.trim().toLowerCase();
+
+        if (username.length < 3 || username.length > 25) {
+            throw Object.assign(new Error("Username must be between 3 and 25 characters"), { statusCode: 400 });
+        }
+        if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+            throw Object.assign(new Error("Username may only contain letters, numbers, and underscores"), { statusCode: 400 });
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            throw Object.assign(new Error("Invalid email address"), { statusCode: 400 });
+        }
+        if (input.password.length < 8) {
+            throw Object.assign(new Error("Password must be at least 8 characters"), { statusCode: 400 });
+        }
+
+        const existing = await User.findOne({
+            $or: [{ email }, { username }],
+        });
+        if (existing) {
+            if (existing.email === email) {
+                throw Object.assign(new Error("An account with that email already exists"), { statusCode: 409 });
+            }
+            throw Object.assign(new Error("That username is taken"), { statusCode: 409 });
+        }
+
+        const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+
+        const user = await User.create({
+            username,
+            email,
+            passwordHash,
+            name: username, // display name defaults to username; user can change it
+            role: "user",
+            preferences: {
+                favoriteOpenings: [],
+                savedPlayers: [],
+                theme: "dark",
+            },
+            refreshTokens: [],
+            lastLogin: new Date(),
+        });
+
+        return user;
+    }
+
+    /**
+     * Authenticate a user by email + password. Returns the user doc with
+     * passwordHash selected. Throws on bad credentials.
+     */
+    static async loginWithEmail(email: string, password: string): Promise<IUser> {
+        const normalized = email.trim().toLowerCase();
+        const user = await User.findOne({ email: normalized }).select("+passwordHash");
+        if (!user || !user.passwordHash) {
+            // Generic message — don't leak whether the email exists
+            throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
+        }
+        const ok = await bcrypt.compare(password, user.passwordHash);
+        if (!ok) {
+            throw Object.assign(new Error("Invalid email or password"), { statusCode: 401 });
+        }
+        user.lastLogin = new Date();
+        await user.save();
+        return user;
+    }
+
     /**
      * Find or Create User from Google OAuth Profile
      */
     static async findOrCreateGoogleUser(profile: any): Promise<IUser> {
         try {
-            // Check if user already exists
+            const email = profile.emails?.[0]?.value?.trim().toLowerCase() || "";
+            const name = profile.displayName || profile.name?.givenName || email.split("@")[0] || "User";
+            const avatar = profile.photos?.[0]?.value || null;
+
+            if (!email) {
+                throw Object.assign(new Error("Google account did not return an email address"), {
+                    statusCode: 400,
+                });
+            }
+
+            // First try to match by Google account, then fall back to email so
+            // an existing email/password user can sign in with Google too.
             let user = await User.findOne({ googleId: profile.id });
 
+            if (!user) {
+                user = await User.findOne({ email });
+            }
+
             if (user) {
+                if (!user.googleId) {
+                    user.googleId = profile.id;
+                }
+
+                user.email = email;
+                user.name = user.name || name;
+                user.avatar = avatar || user.avatar || null;
                 // Update last login
                 user.lastLogin = new Date();
                 await user.save();
@@ -20,9 +120,9 @@ export class AuthService {
             // Create new user
             user = await User.create({
                 googleId: profile.id,
-                email: profile.emails?.[0]?.value || "",
-                name: profile.displayName || profile.name?.givenName || "User",
-                avatar: profile.photos?.[0]?.value || null,
+                email,
+                name,
+                avatar,
                 role: "user",
                 preferences: {
                     favoriteOpenings: [],

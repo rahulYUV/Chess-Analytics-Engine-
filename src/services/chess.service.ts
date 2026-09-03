@@ -246,6 +246,88 @@ export class ChessService {
         });
     }
 
+    /**
+     * List a single month's games for a player. Used by the analysis
+     * game-picker on the frontend. Cached for 24h.
+     */
+    async listGamesForUser(username: string, year: number, month: number) {
+        return cacheService.getOrSet(`games-${username}-${year}-${month}`, async () => {
+            const url = `https://api.chess.com/pub/player/${encodeURIComponent(username.toLowerCase())}/games/${year}/${String(month).padStart(2, "0")}`;
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) {
+                    console.error(`Failed to fetch game archive ${url}: ${res.status} ${res.statusText}`);
+                    return { archiveUrl: url, games: [] };
+                }
+                const data = await res.json() as { games?: any[] };
+                const games = (data.games || []).map((g: any) => ({
+                    gameId: g.url || `${g.end_time}-${g.white?.username}-${g.black?.username}`,
+                    pgn: g.pgn || "",
+                    white: {
+                        username: g.white?.username || "",
+                        rating: g.white?.rating,
+                        result: g.white?.result || "",
+                    },
+                    black: {
+                        username: g.black?.username || "",
+                        rating: g.black?.rating,
+                        result: g.black?.result || "",
+                    },
+                    endTime: g.end_time || 0,
+                    timeClass: g.time_class || "unknown",
+                    timeControl: g.time_control || "",
+                    rated: !!g.rated,
+                }));
+                return { archiveUrl: url, games };
+            } catch (e) {
+                console.error(`Error fetching game archive ${url}:`, e);
+                return { archiveUrl: url, games: [] };
+            }
+        });
+    }
+
+    /** Fetch and filter all games in the rolling three-month window ending now. */
+    async listGamesForLastThreeMonths(username: string) {
+        const end = new Date();
+        const start = new Date(end);
+        const dayOfMonth = end.getDate();
+        start.setDate(1);
+        start.setMonth(start.getMonth() - 3);
+        const lastDayOfStartMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+        start.setDate(Math.min(dayOfMonth, lastDayOfStartMonth));
+        const startTime = Math.floor(start.getTime() / 1000);
+        const endTime = Math.floor(end.getTime() / 1000);
+        const cacheKey = `games-last-3-months-${username}-${start.toISOString().slice(0, 10)}-${end.toISOString().slice(0, 10)}`;
+
+        return cacheService.getOrSet(cacheKey, async () => {
+            const archiveMonths: { year: number; month: number }[] = [];
+            const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+            const lastMonth = new Date(end.getFullYear(), end.getMonth(), 1);
+
+            while (cursor <= lastMonth) {
+                archiveMonths.push({ year: cursor.getFullYear(), month: cursor.getMonth() + 1 });
+                cursor.setMonth(cursor.getMonth() + 1);
+            }
+
+            const results = await mapWithConcurrency(archiveMonths, 5, async ({ year, month }) => {
+                const data = await this.listGamesForUser(username, year, month);
+                return data.games;
+            });
+
+            const games = results
+                .flat()
+                .filter((game: any) => game.endTime >= startTime && game.endTime <= endTime)
+                .sort((a: any, b: any) => b.endTime - a.endTime);
+
+            return {
+                startDate: start.toISOString(),
+                endDate: end.toISOString(),
+                games,
+            };
+        });
+    }
+
     async getRatingHistory(username: string) {
         try {
             const archives = await chessAPI.getPlayerMonthlyArchives(username);
