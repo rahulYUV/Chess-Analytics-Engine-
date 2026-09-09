@@ -4,6 +4,87 @@ import { processData, mapWithConcurrency } from "../utils/helpers";
 
 const chessAPI = new ChessWebAPI();
 
+type PuzzleStats = {
+    solved?: number;
+    rushBest?: number;
+    tacticsRating?: number;
+};
+
+type Streak = {
+    type: "win" | "loss" | "none";
+    count: number;
+    longestWin: number;
+};
+
+function emptyInsights() {
+    return {
+        activity: [],
+        openings: [],
+        dailyActivity: [],
+        colorStats: {
+            white: { wins: 0, loss: 0, draw: 0, total: 0 },
+            black: { wins: 0, loss: 0, draw: 0, total: 0 },
+        },
+        summary: { wins: 0, loss: 0, draw: 0, total: 0 },
+        streak: { type: "none" as const, count: 0, longestWin: 0 },
+        totalGames: 0,
+        games: [],
+    };
+}
+
+const LOSS_RESULTS = new Set(["checkmated", "resigned", "timeout", "abandoned", "lose"]);
+
+function getPuzzleStats(stats: any): PuzzleStats {
+    const tactics = stats?.tactics;
+    const puzzleRush = stats?.puzzle_rush;
+    const tacticsRating = tactics?.last?.rating ?? tactics?.highest?.rating;
+    const rushBest = typeof puzzleRush?.best === "number"
+        ? puzzleRush.best
+        : puzzleRush?.best?.score;
+
+    // Chess.com's public stats endpoint does not expose a cumulative solved
+    // puzzle count. Keep this field absent until the app can track it itself.
+    return {
+        ...(typeof tacticsRating === "number" ? { tacticsRating } : {}),
+        ...(typeof rushBest === "number" ? { rushBest } : {}),
+    };
+}
+
+function resultForPlayer(game: any, username: string): "win" | "loss" | "draw" {
+    const isWhite = game?.white?.username?.toLowerCase() === username.toLowerCase();
+    const result = isWhite ? game?.white?.result : game?.black?.result;
+    if (result === "win") return "win";
+    if (LOSS_RESULTS.has(result)) return "loss";
+    return "draw";
+}
+
+function getStreak(games: any[], username: string): Streak {
+    const orderedResults = [...games]
+        .filter((game) => Number.isFinite(game?.end_time))
+        .sort((a, b) => a.end_time - b.end_time)
+        .map((game) => resultForPlayer(game, username));
+
+    let longestWin = 0;
+    let runningWin = 0;
+    for (const result of orderedResults) {
+        if (result === "win") {
+            runningWin++;
+            longestWin = Math.max(longestWin, runningWin);
+        } else {
+            runningWin = 0;
+        }
+    }
+
+    const latest = orderedResults[orderedResults.length - 1];
+    if (!latest || latest === "draw") return { type: "none", count: 0, longestWin };
+
+    let count = 0;
+    for (let index = orderedResults.length - 1; index >= 0 && orderedResults[index] === latest; index--) {
+        count++;
+    }
+    return { type: latest, count, longestWin };
+}
+
 export class ChessService {
     async getPlayer(id: string) {
         return cacheService.getOrSet(`player-${id}`, async () => {
@@ -43,6 +124,7 @@ export class ChessService {
             return processData({
                 ...player.body,
                 stats: stats.body,
+                puzzleStats: getPuzzleStats(stats.body),
                 clubs: clubs.body.clubs,
                 history,
                 games
@@ -118,11 +200,17 @@ export class ChessService {
 
     async getPlayerInsights(id: string) {
         return cacheService.getOrSet(`insights-${id}`, async () => {
-            const archives = await chessAPI.getPlayerMonthlyArchives(id);
-            const monthlyArchives = archives.body.archives;
+            let monthlyArchives: string[] = [];
+            try {
+                const archives = await chessAPI.getPlayerMonthlyArchives(id);
+                monthlyArchives = archives.body.archives || [];
+            } catch (error) {
+                console.error(`Failed to load monthly archives for ${id}:`, error);
+                return emptyInsights();
+            }
 
             if (!monthlyArchives || monthlyArchives.length === 0) {
-                return { activity: [], openings: [], dailyActivity: [] };
+                return emptyInsights();
             }
 
             const lastMonths = monthlyArchives.slice(-3);
@@ -142,6 +230,7 @@ export class ChessService {
             })).filter(g => g !== null);
 
             const allGames = gamesResults.flatMap((data: any) => data.games || []);
+            const streak = getStreak(allGames, id);
 
             const thirtyDaysAgo = new Date();
             thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -240,6 +329,7 @@ export class ChessService {
                 dailyActivity: dailyActivityArray,
                 colorStats,
                 summary,
+                streak,
                 totalGames: allGames.length,
                 games: gamesForExplorer
             };
@@ -351,9 +441,8 @@ export class ChessService {
                         const isWhite = lastGame.white.username.toLowerCase() === username.toLowerCase();
                         const rating = isWhite ? lastGame.white.rating : lastGame.black.rating;
 
-                        const dateObj = new Date(lastGame.end_time * 1000);
-                        const date = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-01`;
-                        historyPoint = { date, rating };
+                        const date = new Date(lastGame.end_time * 1000).toISOString();
+                        if (typeof rating === "number") historyPoint = { date, rating };
                     }
 
                     return { historyPoint, games };
@@ -367,7 +456,8 @@ export class ChessService {
 
             const history = validResults
                 .map(r => r.historyPoint)
-                .filter((h): h is { date: string, rating: number } => h !== null);
+                .filter((h): h is { date: string, rating: number } => h !== null)
+                .sort((a, b) => a.date.localeCompare(b.date));
 
             const games = validResults.flatMap(r => r.games);
 

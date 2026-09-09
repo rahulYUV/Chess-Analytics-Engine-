@@ -40,7 +40,8 @@ export interface RawEvaluatedMove {
     evalAfter: number;      // centipawns, side-to-move-relative after played move
     bestEvalAfter: number;  // centipawns, side-to-move-relative after best move
     mateBefore?: number;    // mate in N for side-to-move, if any
-    mateAfter?: number;
+    mateAfter?: number;     // mate in N after the PLAYED move (opponent's perspective)
+    bestMateAfter?: number; // mate in N after the BEST move (opponent's perspective), if any
     timeRemainingMs?: number; // clock time before this move
 }
 
@@ -57,32 +58,70 @@ export interface EvaluatedMove {
 
 // ----- classification -----
 
-const MATE_SCORE = 100000; // centipawns-equivalent we treat as "winning"
-
 /**
- * Classify a single move. The eval is always side-to-move-relative, so
- * a negative swing means the side-to-move hurt themselves.
+ * Classify a single move using centipawn LOSS: how much worse the
+ * played move was compared to the engine's best move, both converted
+ * to the mover's own perspective.
  *
- * @param raw - the move's raw data
- * @param bestIsMate - whether the best move led to mate
+ * evalAfter / bestEvalAfter are side-to-move-relative for whoever
+ * moves NEXT (the opponent), since the turn has switched after either
+ * move. We flip both back to the original mover's perspective before
+ * comparing them — this is what makes centipawn-loss meaningful.
  */
 export function classifyMove(raw: RawEvaluatedMove, bestIsMate: boolean): Classification {
-    // Lost mate -> always a blunder regardless of centipawns
+    // Lost a forced mate that existed before the move -> always a blunder
     if (raw.mateBefore !== undefined && raw.mateAfter === undefined) return "blunder";
-    // Found a forced mate when there wasn't one before — brilliant
-    if (raw.mateBefore === undefined && bestIsMate) return "brilliant";
 
-    // delta is positive when the move cost the side-to-move
-    const delta = raw.evalAfter - raw.evalBefore;
+    // Found a forced mate with the best move when there wasn't one
+    // available before, AND the played move didn't also find it
+    if (raw.mateBefore === undefined && bestIsMate && raw.mateAfter === undefined) {
+        return "brilliant";
+    }
 
-    if (delta >= 300) return "blunder";
-    if (delta >= 100) return "mistake";
-    if (delta >= 50) return "inaccuracy";
-    if (delta <= -10) return "best"; // actively improved
+    // Playing the engine's own top choice is always at least "best"
+    if (normalizeSan(raw.playedMove) === normalizeSan(raw.bestMove)) {
+        return "best";
+    }
+
+    // Flip both to the mover's own perspective
+    const moverEvalAfterPlayed = -raw.evalAfter;
+    const moverEvalAfterBest = -raw.bestEvalAfter;
+
+    // How much worse was the played move than the best move,
+    // measured in the mover's own favor (positive = lost ground)
+    const cpLoss = moverEvalAfterBest - moverEvalAfterPlayed;
+
+    if (cpLoss >= 300) return "blunder";
+    if (cpLoss >= 100) return "mistake";
+    if (cpLoss >= 50) return "inaccuracy";
+    if (cpLoss <= -10) return "best"; // played move actually beat the engine's line (rare, but possible with different depths)
     return "good";
 }
 
+function normalizeSan(san: string): string {
+    // Strip check/mate/annotation symbols so "Bb5+" === "Bb5"
+    return san.replace(/[+#!?]/g, "").trim();
+}
+
 // ----- theme detection -----
+
+/**
+ * Safe wrapper around chess.js's attackers() — not all versions expose
+ * it the same way, so we guard against a runtime crash and just treat
+ * an error as "no attackers found" rather than blowing up the whole
+ * analysis pass.
+ */
+function safeAttackers(chess: Chess, square: Square, color: "w" | "b"): Square[] {
+    try {
+        const anyChess = chess as any;
+        if (typeof anyChess.attackers === "function") {
+            return anyChess.attackers(square, color) || [];
+        }
+    } catch {
+        // fall through
+    }
+    return [];
+}
 
 /**
  * Detect a pedagogical theme. Each detector is pure: it takes the FEN
@@ -106,20 +145,19 @@ const isHangingPiece = (
             if (!sq || sq.color !== color) continue;
             if (sq.type === "p" || sq.type === "k") continue;
 
-            const squareName = String.fromCharCode(97 + f) + (8 - r) as Square;
+            const squareName = (String.fromCharCode(97 + f) + (8 - r)) as Square;
 
             // Is this square attacked by the opponent?
             const isAttacked = chessAfter.isAttacked(squareName, color === "w" ? "b" : "w");
             if (!isAttacked) continue;
 
             // Is it defended by a friendly piece?
-            const defenders = chessAfter.attackers(squareName, color);
-            const attackers = chessAfter.attackers(squareName, color === "w" ? "b" : "w");
+            const defenders = safeAttackers(chessAfter, squareName, color);
+            const attackers = safeAttackers(chessAfter, squareName, color === "w" ? "b" : "w");
             if (defenders.length >= attackers.length) continue;
 
             // Was this square defended BEFORE the move and is no longer?
-            const wasDefended = chessBefore
-                .attackers(squareName, color).length > 0;
+            const wasDefended = safeAttackers(chessBefore, squareName, color).length > 0;
 
             if (wasDefended) return true;
         }
@@ -129,34 +167,42 @@ const isHangingPiece = (
 
 const isMissedFork = (
     chessBefore: Chess,
-    _best: Move,
+    best: Move,
+    played: Move,
     isWhite: boolean
 ): boolean => {
-    // The best move attacks at least two enemy non-pawn, non-king pieces.
-    // The played move didn't.
-    if (!_best) return false;
-    const to = _best.to;
-    if (!to) return false;
+    // A fork must be created by the best move, not merely be possible in
+    // the position before either move. Compare the resulting positions so
+    // the played move cannot trigger a false missed-fork explanation.
+    try {
+        const chessAfterBest = new Chess(chessBefore.fen());
+        const chessAfterPlayed = new Chess(chessBefore.fen());
+        chessAfterBest.move(best);
+        chessAfterPlayed.move(played);
 
+        return countAttackedTargets(chessAfterBest, isWhite) >= 2
+            && countAttackedTargets(chessAfterPlayed, isWhite) < 2;
+    } catch {
+        return false;
+    }
+};
+
+function countAttackedTargets(chess: Chess, isWhite: boolean): number {
     const enemyColor = isWhite ? "b" : "w";
-    const board = chessBefore.board();
-    let attackedNonPawnNonKingCount = 0;
+    const attackerColor = isWhite ? "w" : "b";
+    let count = 0;
+    const board = chess.board();
 
-    for (let r = 0; r < 8; r++) {
-        for (let f = 0; f < 8; f++) {
-            const sq = board[r][f];
-            if (!sq || sq.color !== enemyColor) continue;
-            if (sq.type === "p" || sq.type === "k") continue;
-
-            const squareName = String.fromCharCode(97 + f) + (8 - r);
-            if (chessBefore.isAttacked(squareName as Square, isWhite ? "w" : "b")) {
-                attackedNonPawnNonKingCount++;
-            }
+    for (let rank = 0; rank < 8; rank++) {
+        for (let file = 0; file < 8; file++) {
+            const piece = board[rank][file];
+            if (!piece || piece.color !== enemyColor || piece.type === "p" || piece.type === "k") continue;
+            const square = (String.fromCharCode(97 + file) + (8 - rank)) as Square;
+            if (chess.isAttacked(square, attackerColor)) count++;
         }
     }
-
-    return attackedNonPawnNonKingCount >= 2;
-};
+    return count;
+}
 
 const isBackRankWeakness = (chess: Chess, isWhite: boolean): boolean => {
     // King on its back rank with no escape squares AND a rook/queen file.
@@ -167,14 +213,16 @@ const isBackRankWeakness = (chess: Chess, isWhite: boolean): boolean => {
     const backRank = isWhite ? 1 : 8;
     if (rank !== backRank) return false;
 
-    // King has no escape squares (no legal king moves to a different rank)
+    // King has no escape squares (no legal king moves to a different rank).
+    // Board ranks/files are absolute — a king can step in any of the 8
+    // directions regardless of its color, so we don't flip dr by color.
     const kingFile = kingSquare[0];
     const escapes: Square[] = [];
     for (const df of [-1, 0, 1]) {
         for (const dr of [-1, 0, 1]) {
             if (df === 0 && dr === 0) continue;
             const newFile = String.fromCharCode(kingFile.charCodeAt(0) + df);
-            const newRank = rank + (isWhite ? dr : -dr);
+            const newRank = rank + dr;
             if (newFile < "a" || newFile > "h" || newRank < 1 || newRank > 8) continue;
             const target = (newFile + newRank) as Square;
             if (chess.isAttacked(target, isWhite ? "b" : "w")) continue;
@@ -211,17 +259,21 @@ const findKingSquare = (chess: Chess, color: "w" | "b"): Square | null => {
  * Apply the detectors in order, returning the first matching theme.
  * Detection only runs for non-good moves — there's no point finding a
  * missed fork on a best move.
+ *
+ * @param openingMovesSoFar - the actual played SAN moves from ply 1 up
+ * to and including this move, in order. Used to check whether the
+ * game is still "in book" per the ECO table.
  */
 export function detectTheme(
     raw: RawEvaluatedMove,
     played: Move,
-    best: Move | null
+    best: Move | null,
+    openingMovesSoFar: string[]
 ): Theme {
     if (raw.ply > 40) return "none"; // not opening anymore
 
     const isWhite = raw.ply % 2 === 1;
-    const openingMoves = extractOpeningMoves(raw, 20);
-    const isInBook = identifyOpening(openingMoves) !== null;
+    const isInBook = identifyOpening(openingMovesSoFar) !== null;
 
     // Time pressure first — if the player was low on time, that's often
     // the real story even if a tactic is present.
@@ -229,7 +281,7 @@ export function detectTheme(
         return "time_pressure";
     }
 
-    if (isWhite && raw.ply < 20 && !isInBook) {
+    if (raw.ply < 20 && !isInBook) {
         return "opening_deviation";
     }
 
@@ -246,25 +298,15 @@ export function detectTheme(
 
     if (isBackRankWeakness(chessBefore, isWhite)) return "back_rank";
     if (isHangingPiece(chessBefore, chessAfter, played, isWhite)) return "hanging_piece";
-    if (best && isMissedFork(chessBefore, best, isWhite)) return "missed_fork";
+    if (best && isMissedFork(chessBefore, best, played, isWhite)) return "missed_fork";
 
     return "none";
-}
-
-/**
- * Best-effort: pull the first N SAN moves from a FEN by stepping back
- * via move history. Used for opening identification. Since we don't
- * have the full move list here, we instead fall back to the PGN in the
- * caller when available; this function is a stub that returns empty.
- */
-function extractOpeningMoves(_raw: RawEvaluatedMove, _n: number): string[] {
-    return [];
 }
 
 // ----- explanation strings -----
 
 const THEME_EXPLANATIONS: Record<Theme, (ctx: { move: string; best: string; deltaCp: number }) => string> = {
-    hanging_piece: ({ move, deltaCp }) =>
+    hanging_piece: ({ deltaCp }) =>
         `Hanging piece: a piece you left undefended can be captured. Lost about ${Math.abs(Math.round(deltaCp))}cp. The safer move was the engine's suggestion.`,
     missed_fork: ({ best }) =>
         `Missed tactic: ${best} would have attacked two enemy pieces at once. Look for forks — they win material for free.`,
@@ -275,6 +317,8 @@ const THEME_EXPLANATIONS: Record<Theme, (ctx: { move: string; best: string; delt
     time_pressure: () =>
         `Time pressure: under 30s on the clock. When rushed, prioritize checks, captures, and threats (CCT) over long plans.`,
     none: ({ deltaCp }) => {
+        // deltaCp here is centipawn LOSS from the mover's perspective
+        // (positive = lost ground). See classifyMove for how it's derived.
         if (deltaCp >= 300) return `Blunder. This move loses significant material or positional ground.`;
         if (deltaCp >= 100) return `Mistake. The engine finds a substantially better continuation.`;
         if (deltaCp >= 50) return `Inaccuracy. Slightly imprecise — there's a cleaner move in this position.`;
@@ -289,12 +333,18 @@ export function explainMove(theme: Theme, move: string, best: string, deltaCp: n
 // ----- public API -----
 
 /**
- * Main entry point. Given a list of raw moves, returns the same list
- * with classification, theme, and explanation filled in. Pure function.
+ * Main entry point. Given a list of raw moves (in game order, ply 1
+ * first), returns the same list with classification, theme, and
+ * explanation filled in. Pure function.
  */
 export function annotateMoves(rawMoves: RawEvaluatedMove[]): EvaluatedMove[] {
+    // Accumulated actual game history in SAN, built up as we go, so
+    // detectTheme/identifyOpening can check "is this still book?"
+    // against the real moves played — not a stubbed-out empty array.
+    const playedHistorySoFar: string[] = [];
+
     return rawMoves.map((raw) => {
-        const bestIsMate = false; // not exposed in the raw shape yet
+        const bestIsMate = raw.mateBefore === undefined && raw.bestMateAfter !== undefined;
         const classification = classifyMove(raw, bestIsMate);
 
         // We need Move objects for theme detection. Reconstruct from SAN.
@@ -311,8 +361,13 @@ export function annotateMoves(rawMoves: RawEvaluatedMove[]): EvaluatedMove[] {
             // ignore — fall through with nulls
         }
 
+        // Record the actual played move in history BEFORE detecting the
+        // theme for this ply, since "in book up to and including this
+        // move" is what we want to check.
+        if (played) playedHistorySoFar.push(played.san);
+
         const theme = played
-            ? detectTheme(raw, played, best)
+            ? detectTheme(raw, played, best, playedHistorySoFar)
             : "none";
 
         // Only bother with theme explanation for bad moves
@@ -321,7 +376,9 @@ export function annotateMoves(rawMoves: RawEvaluatedMove[]): EvaluatedMove[] {
                 ? "none"
                 : theme;
 
-        const deltaCp = raw.evalAfter - raw.evalBefore;
+        // Centipawn loss from the mover's own perspective (positive =
+        // lost ground), consistent with classifyMove's cpLoss.
+        const deltaCp = -raw.bestEvalAfter - -raw.evalAfter;
         const explanation = effectiveTheme !== "none"
             ? explainMove(effectiveTheme, raw.playedMove, raw.bestMove, deltaCp)
             : (classification === "blunder" || classification === "mistake" || classification === "inaccuracy")

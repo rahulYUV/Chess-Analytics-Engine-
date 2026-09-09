@@ -3,6 +3,7 @@ import { LogOut, User, Settings, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useState, useRef, useEffect } from "react";
 import { SettingsPage } from "./SettingsPage";
+import { Link } from "react-router-dom";
 
 export const UserMenu = () => {
     const { user, logout, isAuthenticated } = useAuth();
@@ -53,18 +54,16 @@ export const UserMenu = () => {
                     >
                         {/* Menu Items */}
                         <div className="p-2">
-                            <button
-                                onClick={() => {
-                                    setIsOpen(false);
-                                    // TODO: Navigate to profile
-                                }}
+                            <Link
+                                to="/profile"
+                                onClick={() => setIsOpen(false)}
                                 className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-left"
                             >
                                 <User className="w-5 h-5 text-neutral-600 dark:text-neutral-400" />
                                 <span className="text-sm font-medium text-neutral-900 dark:text-white">
                                     Profile
                                 </span>
-                            </button>
+                            </Link>
 
                             <button
                                 onClick={() => {

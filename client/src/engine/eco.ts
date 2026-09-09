@@ -83,12 +83,25 @@ export const ECO_OPENINGS: EcoEntry[] = [
  * Returns `null` if the opening isn't recognized.
  */
 export function identifyOpening(movesSan: string[]): EcoEntry | null {
-    const joined = movesSan.join(" ");
+    if (movesSan.length === 0) return null;
+
+    const moves = movesSan.map(normalizeSan);
     let best: EcoEntry | null = null;
     for (const entry of ECO_OPENINGS) {
-        if (joined.startsWith(entry.moves) && (!best || entry.moves.length > best.moves.length)) {
+        const entryMoves = entry.moves.split(" ").map(normalizeSan);
+        const sharedLength = Math.min(moves.length, entryMoves.length);
+        const sharesPrefix = moves.slice(0, sharedLength).every((move, index) => move === entryMoves[index]);
+        if (sharesPrefix && (!best || entryMoves.length > best.moves.split(" ").length)) {
             best = entry;
         }
     }
     return best;
+}
+
+function normalizeSan(move: string): string {
+    return move
+        .trim()
+        .replace(/[+#?!]+$/g, "")
+        .replace(/^0-0-0$/, "O-O-O")
+        .replace(/^0-0$/, "O-O");
 }
