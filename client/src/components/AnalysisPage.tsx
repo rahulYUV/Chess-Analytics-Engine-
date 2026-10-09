@@ -37,6 +37,7 @@ export default function AnalysisPage() {
     const { isAuthenticated, isLoading } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
+    const isGameAnalysis = /^\/analysis\/[^/]+/.test(location.pathname);
 
     useEffect(() => {
         if (!isLoading && !isAuthenticated) {
@@ -57,8 +58,8 @@ export default function AnalysisPage() {
 
     return (
         <GridBackground>
-            <Navbar />
-            <main className="min-h-screen pt-20">
+            {!isGameAnalysis && <Navbar />}
+            <main className={isGameAnalysis ? "min-h-screen" : "min-h-screen pt-20"}>
                 <div className="mx-auto max-w-7xl animate-in fade-in px-4 duration-300 sm:px-6 lg:px-8">
                     <ErrorBoundary>
                         <Routes>
