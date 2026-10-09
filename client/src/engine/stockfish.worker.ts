@@ -22,9 +22,9 @@ import StockfishModule from "lila-stockfish-web/sf16-7.js";
 const NNUE_WEIGHTS_URL = "https://tests.stockfishchess.org/api/nn/nn-ecb35f70ff2a.nnue";
 
 type Cmd =
-    | { type: "analyze"; fen: string; depth?: number; multipv?: number }
-    | { type: "hint"; fen: string }
-    | { type: "stop" };
+    | { type: "analyze"; fen: string; depth?: number; multipv?: number; id?: string }
+    | { type: "hint"; fen: string; id?: string }
+    | { type: "stop"; id?: string };
 
 // Stockfish's "info" line looks like:
 //   info depth 20 seldepth 25 multipv 1 score cp 35 nodes 1234 nps 5678 hashfull 50 tbhits 0 time 200 pv e2e4 e7e5 g1f3
@@ -63,6 +63,7 @@ let searchInFlight = false;
 // one-shot hint, so `hint` commands can await a single result instead
 // of only relying on the generic `bestmove` broadcast.
 let bestmoveCallback: ((move: string) => void) | null = null;
+let activeRequestId: string | undefined;
 
 const post = (msg: any) => (self as any).postMessage(msg);
 
@@ -111,7 +112,7 @@ async function handleEngineLine(line: string): Promise<void> {
         }
     } else if (line.startsWith("info") && line.includes(" pv ")) {
         const parsed = parseInfo(line);
-        if (parsed) post({ type: "info", ...parsed });
+        if (parsed) post({ type: "info", id: activeRequestId, ...parsed });
     } else if (line.startsWith("bestmove")) {
         searchInFlight = false;
         const move = line.split(/\s+/)[1] || "";
@@ -120,7 +121,8 @@ async function handleEngineLine(line: string): Promise<void> {
             bestmoveCallback = null;
             cb(move);
         }
-        post({ type: "bestmove", move });
+        post({ type: "bestmove", id: activeRequestId, move });
+        activeRequestId = undefined;
     }
 }
 
@@ -165,6 +167,7 @@ function setMultipv(n: number) {
 
 function handleCmd(cmd: Cmd) {
     if (cmd.type === "stop") {
+        if (cmd.id && cmd.id !== activeRequestId) return;
         pendingCmd = null;
         if (engineReady && searchInFlight) send("stop");
         return;
@@ -182,6 +185,7 @@ function handleCmd(cmd: Cmd) {
     }
 
     if (cmd.type === "analyze") {
+        activeRequestId = cmd.id;
         const depth = cmd.depth ?? 18;
         setMultipv(cmd.multipv ?? 1);
         // Avoid `ucinewgame` here: it clears the transposition table,
@@ -194,6 +198,7 @@ function handleCmd(cmd: Cmd) {
         return;
     }
     if (cmd.type === "hint") {
+        activeRequestId = cmd.id;
         setMultipv(1);
         send(`position fen ${cmd.fen}`);
         searchInFlight = true;

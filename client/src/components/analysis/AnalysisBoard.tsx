@@ -14,12 +14,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Chess } from "chess.js";
+import { Chessboard } from "react-chessboard";
 import { motion } from "motion/react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Lightbulb, Loader2, RotateCcw } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { ArrowLeft, ChevronLeft, ChevronRight, FlipHorizontal2, Lightbulb, Loader2, RotateCcw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { annotateMoves, type EvaluatedMove, type RawEvaluatedMove } from "@/engine/teacher";
-import StockfishWorker from "@/engine/stockfish.worker?worker";
+import { StockfishEngine, type EngineResult } from "@/engine/engine";
+import { apiFetch } from "@/utils/api";
 
 interface AnalysisDoc {
     _id: string;
@@ -42,16 +43,18 @@ const CLASS_COLOR: Record<string, string> = {
     brilliant: "bg-blue-500",
 };
 
-const CLASS_LABEL: Record<string, string> = {
+const CLASS_SYMBOL: Record<string, string> = {
     blunder: "??",
     mistake: "?",
     inaccuracy: "?!",
-    good: "",
     best: "!",
     brilliant: "!!",
+    good: "",
 };
 
-function parsePgnMoves(pgn: string): { san: string; fen: string }[] {
+type ParsedMove = { san: string; uci: string; before: string; after: string };
+
+function parsePgnMoves(pgn: string): ParsedMove[] {
     // chess.js is the most reliable PGN parser; load the full PGN and
     // walk the history.
     const chess = new Chess();
@@ -63,15 +66,17 @@ function parsePgnMoves(pgn: string): { san: string; fen: string }[] {
     }
     const moves = chess.history({ verbose: true });
     return moves.map((m) => {
-        const before = new Chess(m.before);
-        return { san: m.san, fen: before.fen() };
+        return {
+            san: m.san,
+            uci: `${m.from}${m.to}${m.promotion || ""}`,
+            before: m.before,
+            after: m.after,
+        };
     });
 }
 
 export default function AnalysisBoard() {
     const { id } = useParams<{ id: string }>();
-    const { user } = useAuth();
-
     const [doc, setDoc] = useState<AnalysisDoc | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
@@ -81,10 +86,17 @@ export default function AnalysisBoard() {
     const [hintLoading, setHintLoading] = useState(false);
     const [depth, setDepth] = useState(0);
     const [currentEval, setCurrentEval] = useState<number | null>(null);
+    const [currentMate, setCurrentMate] = useState<number | undefined>(undefined);
     const [noteDraft, setNoteDraft] = useState("");
+    const [analysisProgress, setAnalysisProgress] = useState({ completed: 0, total: 0 });
+    const [boardOrientation, setBoardOrientation] = useState<"white" | "black">("white");
+    const [showBestMove, setShowBestMove] = useState(true);
+    const [noteStatus, setNoteStatus] = useState<"saved" | "saving" | "error">("saved");
+    const [movesSaveError, setMovesSaveError] = useState("");
 
-    const workerRef = useRef<Worker | null>(null);
-    const movesRef = useRef<{ san: string; fen: string }[]>([]);
+    const batchEngineRef = useRef<StockfishEngine | null>(null);
+    const interactiveEngineRef = useRef<StockfishEngine | null>(null);
+    const moves = useMemo(() => (doc?.pgn ? parsePgnMoves(doc.pgn) : []), [doc?.pgn]);
     const moveButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
     const audioContextRef = useRef<AudioContext | null>(null);
     const previousPlyRef = useRef(0);
@@ -95,17 +107,10 @@ export default function AnalysisBoard() {
         let cancelled = false;
         (async () => {
             try {
-                const apiUrl = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
-                const token = localStorage.getItem("accessToken");
-                const res = await fetch(`${apiUrl}/analysis/${id}`, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
-                });
-                if (!res.ok) throw new Error(`Failed to load analysis (${res.status})`);
-                const data = await res.json();
+                const data = await apiFetch<{ analysis: AnalysisDoc }>(`/analysis/${id}`);
                 if (cancelled) return;
                 setDoc(data.analysis);
                 setNoteDraft(data.analysis.note || "");
-                movesRef.current = parsePgnMoves(data.analysis.pgn);
             } catch (e: any) {
                 if (!cancelled) setError(e.message || "Failed to load analysis");
             } finally {
@@ -115,36 +120,40 @@ export default function AnalysisBoard() {
         return () => { cancelled = true; };
     }, [id]);
 
-    // ----- spawn stockfish worker -----
+    // ----- spawn isolated Stockfish engines -----
     useEffect(() => {
-        const w = new StockfishWorker();
-        workerRef.current = w;
-        w.onmessage = (e: MessageEvent) => {
-            const msg = e.data;
-            if (msg?.type === "info") {
-                setDepth((d) => (msg.depth > d ? msg.depth : d));
-            }
+        batchEngineRef.current = new StockfishEngine();
+        interactiveEngineRef.current = new StockfishEngine();
+        return () => {
+            batchEngineRef.current?.terminate();
+            interactiveEngineRef.current?.terminate();
+            batchEngineRef.current = null;
+            interactiveEngineRef.current = null;
         };
-        return () => { w.postMessage({ type: "stop" }); w.terminate(); workerRef.current = null; };
     }, []);
 
     // Keep keyboard navigation available while the analysis page is focused.
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             const target = event.target as HTMLElement;
             if (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
 
             event.preventDefault();
-            setPlyIndex((current) => Math.max(0, Math.min(movesRef.current.length, current + (event.key === "ArrowRight" ? 1 : -1))));
+            setPlyIndex((current) => event.key === "Home"
+                ? 0
+                : event.key === "End"
+                    ? moves.length
+                    : Math.max(0, Math.min(moves.length, current + (event.key === "ArrowRight" ? 1 : -1))));
         };
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, []);
+    }, [moves.length]);
 
     useEffect(() => {
         const previousPly = previousPlyRef.current;
+        setHint(null);
         if (previousPly !== plyIndex && Math.abs(previousPly - plyIndex) === 1) {
             playMoveSound();
         }
@@ -187,164 +196,124 @@ export default function AnalysisBoard() {
 
     // ----- derived position -----
     const currentPosition = useMemo(() => {
-        if (!movesRef.current.length) return new Chess();
-        const c = new Chess();
-        for (let i = 0; i < plyIndex; i++) {
-            c.move(movesRef.current[i].san);
-        }
-        return c;
-    }, [plyIndex, doc]);
+        if (!moves.length) return new Chess();
+        return new Chess(plyIndex === 0 ? moves[0].before : moves[Math.min(plyIndex, moves.length) - 1].after);
+    }, [moves, plyIndex]);
 
     // ----- run analysis when analysis doc loads -----
     useEffect(() => {
-        if (!doc || !workerRef.current) return;
-        const moves = movesRef.current;
+        if (!doc || !batchEngineRef.current) return;
         if (moves.length === 0) return;
 
         // If we already have evaluated moves, skip re-analysis
         if (doc.evaluatedMoves && doc.evaluatedMoves.length === moves.length) return;
 
         const raw: RawEvaluatedMove[] = [];
-        const worker = workerRef.current;
+        const engine = batchEngineRef.current;
+        const cache = new Map<string, EngineResult>();
         let cancelled = false;
 
         (async () => {
-            if (!worker) return;
+            setAnalysisProgress({ completed: 0, total: moves.length });
             for (let i = 0; i < moves.length; i++) {
                 if (cancelled) return;
-                const before = moves[i].fen;
-                const after = (i + 1 < moves.length) ? moves[i + 1].fen : before;
-
-                // Best move at "before"
-                const bestMoveSan: string = await new Promise((resolve) => {
-                    const timeout = window.setTimeout(() => {
-                        worker.removeEventListener("message", handler);
-                        resolve("");
-                    }, 15000);
-                    const handler = (ev: MessageEvent) => {
-                        const m = ev.data;
-                        if (m?.type === "bestmove") {
-                            worker.removeEventListener("message", handler);
-                            window.clearTimeout(timeout);
-                            resolve(m.move || "");
-                        }
-                    };
-                    worker.addEventListener("message", handler);
-                    worker.postMessage({ type: "analyze", fen: before, depth: 16 });
-                });
-                const bestAfterFen = applyMove(before, bestMoveSan);
-
-                // Eval at "before" from the side-to-move's perspective
-                const evalBefore = await evalAt(worker, before, 14);
-
-                // Eval at the actual played move
-                const evalAfterPlayed = await evalAt(worker, after, 14);
-
-                // Eval at the best move
-                const evalAfterBest = await evalAt(worker, bestAfterFen, 14);
+                const before = moves[i].before;
+                const after = moves[i].after;
+                const beforeResult = await evaluateCached(engine, cache, before, 16);
+                const playedResult = await evaluateCached(engine, cache, after, 14);
+                const bestMoveUci = beforeResult.bestMove;
+                const bestAfterFen = applyMove(before, bestMoveUci);
+                const bestResult = bestMoveUci === moves[i].uci
+                    ? playedResult
+                    : await evaluateCached(engine, cache, bestAfterFen, 14);
 
                 if (cancelled) return;
 
-                const isWhite = (i % 2) === 0;
                 raw.push({
                     ply: i + 1,
                     fen: before,
                     playedMove: moves[i].san,
-                    bestMove: bestMoveSan || moves[i].san,
-                    evalBefore: sideRelative(evalBefore, isWhite),
-                    evalAfter: sideRelative(evalAfterPlayed, isWhite),
-                    bestEvalAfter: sideRelative(evalAfterBest, isWhite),
+                    bestMove: uciToSan(before, bestMoveUci) || moves[i].san,
+                    evalBefore: scoreValue(beforeResult),
+                    evalAfter: -scoreValue(playedResult),
+                    bestEvalAfter: -scoreValue(bestResult),
+                    ...(beforeResult.mate === undefined ? {} : { mateBefore: beforeResult.mate }),
+                    ...(playedResult.mate === undefined ? {} : { mateAfter: -playedResult.mate }),
+                    ...(bestResult.mate === undefined ? {} : { bestMateAfter: -bestResult.mate }),
                 });
+                setAnalysisProgress({ completed: i + 1, total: moves.length });
             }
 
             if (cancelled) return;
 
             const annotated = annotateMoves(raw);
+            setMovesSaveError("");
             // persist
             try {
-                const apiUrl = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
-                const token = localStorage.getItem("accessToken");
-                await fetch(`${apiUrl}/analysis/${id}/moves`, {
-                    method: "PATCH",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                    },
-                    body: JSON.stringify({ moves: annotated }),
-                });
+                await apiFetch(`/analysis/${id}/moves`, { method: "PATCH", body: JSON.stringify({ moves: annotated }) });
                 setDoc((d) => d ? { ...d, evaluatedMoves: annotated } : d);
             } catch (e) {
-                console.error("Failed to save evaluated moves:", e);
+                const message = e instanceof Error ? e.message : "Failed to save evaluated moves";
+                setMovesSaveError(message);
+                console.error(message);
             }
         })();
 
         return () => {
             cancelled = true;
-            worker?.postMessage({ type: "stop" });
         };
-    }, [doc, id]);
+    }, [doc, id, moves]);
 
     // Re-evaluate the position shown on the board whenever the active ply changes.
     useEffect(() => {
-        const worker = workerRef.current;
-        if (!worker || !doc || movesRef.current.length === 0 || doc.evaluatedMoves.length !== movesRef.current.length) return;
-        let cancelled = false;
+        const engine = interactiveEngineRef.current;
+        if (!engine || !doc || moves.length === 0 || doc.evaluatedMoves.length !== moves.length) return;
+        const controller = new AbortController();
         setCurrentEval(null);
+        setCurrentMate(undefined);
 
-        evaluatePosition(worker, currentPosition.fen(), 12).then((evaluation) => {
-            if (!cancelled) setCurrentEval(evaluation);
+        engine.evaluate(currentPosition.fen(), 12, { signal: controller.signal }).then((result) => {
+            setDepth(result.depth);
+            setCurrentEval(scoreValue(result));
+            setCurrentMate(result.mate);
+        }).catch((error: unknown) => {
+            if (!(error instanceof DOMException && error.name === "AbortError")) console.error("Interactive evaluation failed:", error);
         });
 
-        return () => {
-            cancelled = true;
-            worker.postMessage({ type: "stop" });
-        };
-    }, [currentPosition, doc]);
+        return () => controller.abort();
+    }, [currentPosition, doc, moves.length]);
 
     // ----- hint -----
     const requestHint = async () => {
-        if (!workerRef.current) return;
+        if (!interactiveEngineRef.current) return;
         setHintLoading(true);
         setHint(null);
-        const w = workerRef.current;
-        const fen = currentPosition.fen();
-        w.postMessage({ type: "hint", fen });
-        const move = await new Promise<string>((resolve) => {
-            const handler = (ev: MessageEvent) => {
-                const m = ev.data;
-                if (m?.type === "bestmove") {
-                    w.removeEventListener("message", handler);
-                    resolve(m.move || "");
-                }
-            };
-            w.addEventListener("message", handler);
-        });
-        setHint(move);
-        setHintLoading(false);
+        try {
+            const result = await interactiveEngineRef.current.evaluate(currentPosition.fen(), 12, { hint: true });
+            setHint(result.bestMove);
+        } catch (error) {
+            console.error("Hint request failed:", error);
+        } finally {
+            setHintLoading(false);
+        }
     };
 
     // ----- save note (debounced) -----
     useEffect(() => {
-        if (!doc || noteDraft === doc.note) return;
+        if (!doc || noteStatus !== "saved" || noteDraft === doc.note) return;
+        setNoteStatus("saving");
         const t = setTimeout(async () => {
             try {
-                const apiUrl = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
-                const token = localStorage.getItem("accessToken");
-                await fetch(`${apiUrl}/analysis/${id}/note`, {
-                    method: "PATCH",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                    },
-                    body: JSON.stringify({ note: noteDraft }),
-                });
+                await apiFetch(`/analysis/${id}/note`, { method: "PATCH", body: JSON.stringify({ note: noteDraft }) });
                 setDoc((d) => d ? { ...d, note: noteDraft } : d);
+                setNoteStatus("saved");
             } catch (e) {
+                setNoteStatus("error");
                 console.error("Failed to save note:", e);
             }
         }, 700);
         return () => clearTimeout(t);
-    }, [noteDraft, doc, id]);
+    }, [noteDraft, id, doc, noteStatus]);
 
     if (loading) {
         return (
@@ -362,24 +331,42 @@ export default function AnalysisBoard() {
         );
     }
 
-    const totalPlies = movesRef.current.length;
-    const evals = doc.evaluatedMoves.map((m) => m.evalAfter);
+    const totalPlies = moves.length;
+    const evals = doc.evaluatedMoves.map((move, index) => index % 2 === 0 ? move.evalAfter : -move.evalAfter);
     const moveAt = (i: number) => doc.evaluatedMoves[i];
     const classified = moveAt(plyIndex - 1);
+    const storedEval = plyIndex === 0 ? 30 : evals[Math.max(0, plyIndex - 1)] ?? 30;
+    const whiteEvaluation = currentEval === null
+        ? storedEval
+        : currentEval * (currentPosition.turn() === "w" ? 1 : -1);
+    const currentMove = plyIndex > 0 ? doc.evaluatedMoves[plyIndex - 1] : undefined;
+    const badMove = currentMove && ["blunder", "mistake", "inaccuracy"].includes(currentMove.classification);
+    const bestArrow = showBestMove && badMove && moves[plyIndex - 1]
+        ? (() => {
+            const best = new Chess(moves[plyIndex - 1].before).move(currentMove.bestMove);
+            return best ? { startSquare: best.from, endSquare: best.to, color: "#2563eb" } : undefined;
+        })()
+        : undefined;
+    const mistakePlies = doc.evaluatedMoves.filter((move) => ["blunder", "mistake", "inaccuracy"].includes(move.classification)).map((move) => move.ply);
+    const lastMove = plyIndex > 0 ? (() => {
+        const entry = moves[plyIndex - 1];
+        return entry ? { from: entry.uci.slice(0, 2), to: entry.uci.slice(2, 4) } : undefined;
+    })() : undefined;
 
     return (
-        <div className="max-w-7xl mx-auto p-4 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
-            <div className="space-y-4">
-                <div className="flex items-center gap-2 text-sm">
-                    <Link to="/analysis" className="text-muted-foreground hover:text-primary inline-flex items-center gap-1">
-                        <ArrowLeft className="h-4 w-4" /> Games
-                    </Link>
-                    <span className="text-muted-foreground">·</span>
-                    <span className="font-semibold">{doc.white.username} vs {doc.black.username}</span>
-                </div>
+        <div className="mx-auto flex h-screen max-w-7xl flex-col overflow-y-auto px-4 py-3 lg:overflow-hidden">
+            <div className="mb-3 flex shrink-0 items-center gap-2 text-sm">
+                <Link to="/analysis" className="inline-flex items-center gap-1 text-slate-500 transition hover:text-slate-900">
+                    <ArrowLeft className="h-4 w-4" /> Games
+                </Link>
+                <span className="text-slate-300">·</span>
+                <span className="font-semibold text-slate-800">{doc.white.username} vs {doc.black.username}</span>
+            </div>
 
-                <Card>
-                    <CardContent className="p-4">
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+                <div className="flex min-h-0 min-w-0 flex-col items-center gap-3 overflow-y-auto pb-2">
+                <Card className="w-full max-w-[620px] shrink-0 rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <CardContent className="p-3">
                         <div className="flex items-center gap-4">
                             <div className="text-center flex-1">
                                 <div className="text-sm text-muted-foreground">White</div>
@@ -396,104 +383,113 @@ export default function AnalysisBoard() {
                     </CardContent>
                 </Card>
 
-                <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 items-start">
-                    <EvalBar evals={evals} ply={plyIndex} currentEval={currentEval} />
-                    <div className="space-y-3">
-                        <BoardView fen={currentPosition.fen()} lastMove={movesRef.current[plyIndex - 1]?.san} hint={hint} />
-                        <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex min-h-0 w-full max-w-[620px] items-stretch justify-center gap-2">
+                    <EvalBar evaluation={whiteEvaluation} mate={currentMate} />
+                    <div className="min-w-0 flex-1">
+                        <BoardView fen={currentPosition.fen()} lastMove={lastMove} hint={hint} bestArrow={bestArrow} boardOrientation={boardOrientation} />
+                        <div className="mx-auto mt-2 flex max-w-full flex-wrap items-center justify-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm">
                             <button
+                                type="button"
                                 onClick={() => setPlyIndex(0)}
-                                className="px-3 py-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-sm"
+                                aria-label="Go to first position"
+                                className="rounded-full px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
                             >
                                 <RotateCcw className="h-4 w-4 inline" />
                             </button>
                             <button
+                                type="button"
                                 onClick={() => setPlyIndex((p) => Math.max(0, p - 1))}
                                 disabled={plyIndex === 0}
-                                className="px-3 py-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-sm disabled:opacity-50"
+                                aria-label="Previous move"
+                                className="rounded-full px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
                             >
                                 <ChevronLeft className="h-4 w-4 inline" />
                             </button>
                             <button
+                                type="button"
                                 onClick={() => setPlyIndex((p) => Math.min(totalPlies, p + 1))}
                                 disabled={plyIndex === totalPlies}
-                                className="px-3 py-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-sm disabled:opacity-50"
+                                aria-label="Next move"
+                                className="rounded-full px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
                             >
                                 <ChevronRight className="h-4 w-4 inline" />
                             </button>
-                            <span className="text-sm text-muted-foreground">
+                            <span className="px-2 text-xs font-medium text-slate-500">
                                 Move {Math.ceil(plyIndex / 2)}{plyIndex > 0 ? (plyIndex % 2 === 1 ? " (W)" : " (B)") : ""}
                             </span>
                             <button
+                                type="button"
                                 onClick={requestHint}
                                 disabled={hintLoading}
-                                className="ml-auto px-3 py-1.5 rounded-md bg-yellow-500 text-black text-sm font-medium flex items-center gap-1"
+                                className="rounded-full bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-200"
                             >
                                 {hintLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Lightbulb className="h-3 w-3" />}
-                                Hint
+                                    Hint
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowBestMove((visible) => !visible)}
+                                className={`rounded-full border px-2.5 py-1.5 text-xs ${showBestMove ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 text-slate-500"}`}
+                            >
+                                Best arrow
+                            </button>
+                            {mistakePlies.length > 0 && (
+                                <>
+                                    <button type="button" onClick={() => setPlyIndex(mistakePlies.find((ply) => ply > plyIndex) || mistakePlies[0])} className="rounded-full border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100">Next mistake</button>
+                                    <button type="button" onClick={() => setPlyIndex([...mistakePlies].reverse().find((ply) => ply < plyIndex) || mistakePlies[mistakePlies.length - 1])} className="rounded-full border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100">Prev mistake</button>
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => setBoardOrientation((orientation) => orientation === "white" ? "black" : "white")}
+                                className="rounded-full border border-slate-200 px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+                                aria-label="Flip board"
+                            >
+                                <FlipHorizontal2 className="h-4 w-4" />
                             </button>
                         </div>
                     </div>
                 </div>
 
-                {classified && (
-                    <Card>
-                        <CardContent className="p-4 space-y-2">
-                            <div className="flex items-center gap-2">
-                                <span className={`inline-block w-2 h-2 rounded-full ${CLASS_COLOR[classified.classification]}`} />
-                                <span className="text-sm font-semibold">
-                                    {classified.classification.toUpperCase()}
-                                    {CLASS_LABEL[classified.classification] && ` ${CLASS_LABEL[classified.classification]}`}
-                                </span>
-                                {classified.theme !== "none" && (
-                                    <span className="text-xs text-muted-foreground">
-                                        · {classified.theme.replace("_", " ")}
-                                    </span>
-                                )}
+                </div>
+
+                <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <Card className="shrink-0 border-0 bg-slate-50 shadow-none">
+                        <CardContent className="space-y-2 p-3">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-sm font-semibold text-slate-800">Game overview</h2>
+                                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">{doc.white.result === "win" ? "White won" : doc.black.result === "win" ? "Black won" : "Draw"}</span>
                             </div>
-                            <p className="text-sm">{classified.explanation || "Solid move."}</p>
-                            <div className="text-xs text-muted-foreground">
-                                Played: {classified.playedMove} · Best: {classified.bestMove}
+                            <div className="flex items-center justify-between text-sm">
+                                <span className="text-slate-600">{doc.white.username}</span>
+                                <span className="font-semibold text-slate-800">{doc.white.rating || "—"}</span>
                             </div>
+                            <div className="flex items-center justify-between text-sm">
+                                <span className="text-slate-600">{doc.black.username}</span>
+                                <span className="font-semibold text-slate-800">{doc.black.rating || "—"}</span>
+                            </div>
+                            {classified && <p className="border-t border-slate-200 pt-2 text-xs text-slate-600">{classified.classification.toUpperCase()} · {classified.explanation || "Solid move."}</p>}
+                            <AccuracySummary moves={doc.evaluatedMoves} />
                         </CardContent>
                     </Card>
-                )}
 
-                {plyIndex === totalPlies && totalPlies > 0 && (
-                    <ResultCard doc={doc} username={user?.chessUsername} />
-                )}
-
-                <Card>
-                    <CardContent className="p-4 space-y-2">
-                        <h3 className="text-sm font-semibold">Your notes</h3>
-                        <textarea
-                            value={noteDraft}
-                            onChange={(e) => setNoteDraft(e.target.value)}
-                            placeholder="What did you learn from this game? What will you do differently?"
-                            rows={4}
-                            className="w-full bg-neutral-100 dark:bg-neutral-800 rounded-md p-2 text-sm"
-                        />
-                    </CardContent>
-                </Card>
-            </div>
-
-            <div className="space-y-4">
-                <Card>
-                    <CardContent className="p-4 space-y-2">
+                    <Card className="shrink-0 rounded-xl border border-slate-200 shadow-sm">
+                    <CardContent className="space-y-2 p-3">
                         <div className="flex items-center justify-between">
                             <h3 className="text-sm font-semibold">Moves</h3>
-                            <span className="text-xs text-muted-foreground">Depth: {depth}{currentEval !== null ? ` · ${currentEval > 0 ? "+" : ""}${(currentEval / 100).toFixed(1)}` : ""}</span>
+                            <span className="text-xs text-muted-foreground">Depth: {depth}{currentMate !== undefined ? ` · M${Math.abs(currentMate)}` : currentEval !== null ? ` · ${currentEval > 0 ? "+" : ""}${(currentEval / 100).toFixed(1)}` : ""}</span>
                         </div>
-                        <div className="grid grid-cols-2 gap-1 max-h-[420px] overflow-y-auto text-sm">
-                            {movesRef.current.map((m, i) => {
+                        <div className="grid h-[260px] grid-cols-2 gap-1 overflow-y-auto rounded-md bg-slate-50 p-1 text-sm">
+                            {moves.map((m, i) => {
                                 const classified = moveAt(i);
                                 const isCurrent = plyIndex === i + 1;
                                 return (
                                     <button
+                                        type="button"
                                         key={i}
                                         ref={(element) => { moveButtonRefs.current[i] = element; }}
                                         onClick={() => setPlyIndex(i + 1)}
-                                        className={`text-left px-2 py-1 rounded flex items-center gap-1 ${isCurrent ? "bg-yellow-500/20" : "hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}
+                                        className={`flex items-center gap-1 rounded px-2 py-1 text-left ${isCurrent ? "bg-amber-100 text-amber-900" : "text-slate-700 hover:bg-slate-100"}`}
                                     >
                                         <span className="text-xs text-muted-foreground w-6 inline-block">
                                             {i % 2 === 0 ? `${Math.floor(i / 2) + 1}.` : ""}
@@ -502,25 +498,78 @@ export default function AnalysisBoard() {
                                             <span className={`inline-block w-1.5 h-1.5 rounded-full ${CLASS_COLOR[classified.classification]}`} />
                                         )}
                                         <span>{m.san}</span>
+                                        {classified?.classification && <span className="ml-auto text-xs font-semibold text-slate-500">{CLASS_SYMBOL[classified.classification]}</span>}
                                     </button>
                                 );
                             })}
                         </div>
                     </CardContent>
-                </Card>
+                    </Card>
 
-                <Card>
-                    <CardContent className="p-4">
-                        <h3 className="text-sm font-semibold mb-2">Eval graph</h3>
-                        <EvalGraph evals={evals} ply={plyIndex} />
+                <Card className="shrink-0 rounded-xl border border-slate-200 shadow-sm">
+                    <CardContent className="p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                            <h3 className="text-sm font-semibold text-slate-800">Engine evaluation</h3>
+                            <span className="text-xs text-slate-500">Depth {depth}</span>
+                        </div>
+                        <EvalGraph evals={evals} ply={plyIndex} onSelect={(ply) => setPlyIndex(Math.max(0, Math.min(totalPlies, ply)))} />
+                        {analysisProgress.total > 0 && analysisProgress.completed < analysisProgress.total && (
+                            <div className="space-y-1">
+                                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-emerald-500 transition-all" style={{ width: `${(analysisProgress.completed / analysisProgress.total) * 100}%` }} /></div>
+                                <p className="text-xs text-slate-500">Analyzing {analysisProgress.completed}/{analysisProgress.total} moves…</p>
+                            </div>
+                        )}
+                        {movesSaveError && <p className="text-xs text-red-600">Could not save evaluations: {movesSaveError}</p>}
                     </CardContent>
                 </Card>
+
+                <Card className="shrink-0 rounded-xl border border-slate-200 shadow-sm">
+                    <CardContent className="space-y-2 p-3">
+                        <div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-slate-800">Your notes</h3><span className={`text-xs ${noteStatus === "error" ? "text-red-600" : "text-slate-500"}`}>{noteStatus === "saving" ? "Saving…" : noteStatus === "error" ? "Save failed" : "Saved"}</span></div>
+                        <textarea value={noteDraft} onChange={(e) => { setNoteStatus("saved"); setNoteDraft(e.target.value); }} placeholder="What did you learn from this game?" rows={3} className="w-full rounded-md border border-slate-200 bg-slate-50 p-2 text-sm text-slate-800 outline-none focus:border-emerald-500" />
+                    </CardContent>
+                </Card>
+                </aside>
             </div>
         </div>
     );
 }
 
 // ----- helpers -----
+
+function scoreValue(result: Pick<EngineResult, "cp" | "mate">): number {
+    if (result.mate === undefined) return result.cp;
+    return Math.sign(result.mate || 1) * 100000;
+}
+
+function uciToSan(fen: string, uci: string): string {
+    if (!uci || uci === "(none)") return "";
+    try {
+        const chess = new Chess(fen);
+        const move = chess.move({
+            from: uci.slice(0, 2) as never,
+            to: uci.slice(2, 4) as never,
+            promotion: (uci[4] || undefined) as never,
+        });
+        return move?.san || "";
+    } catch {
+        return "";
+    }
+}
+
+async function evaluateCached(
+    engine: StockfishEngine,
+    cache: Map<string, EngineResult>,
+    fen: string,
+    depth: number,
+): Promise<EngineResult> {
+    const key = `${fen}|${depth}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const result = await engine.evaluate(fen, depth);
+    cache.set(key, result);
+    return result;
+}
 
 function applyMove(fen: string, uci: string): string {
     if (!uci || uci === "(none)") return fen;
@@ -536,148 +585,85 @@ function applyMove(fen: string, uci: string): string {
     return c.fen();
 }
 
-async function evaluatePosition(worker: Worker, fen: string, depth: number): Promise<number> {
-    return new Promise((resolve) => {
-        let latestCp = 0;
-        let reachedDepth = false;
-        const timeout = window.setTimeout(() => {
-            worker.removeEventListener("message", handler);
-            worker.postMessage({ type: "stop" });
-            resolve(latestCp);
-        }, 15000);
-        const handler = (ev: MessageEvent) => {
-            const m = ev.data;
-            if (m?.type === "info" && typeof m.cp === "number") {
-                latestCp = m.cp;
-                if (m.depth >= depth) reachedDepth = true;
-            }
-            if (m?.type === "bestmove" && reachedDepth) {
-                worker.removeEventListener("message", handler);
-                window.clearTimeout(timeout);
-                resolve(latestCp);
-            }
-        };
-        worker.addEventListener("message", handler);
-        worker.postMessage({ type: "analyze", fen, depth });
-    });
-}
-
-async function evalAt(worker: Worker, fen: string, depth: number): Promise<number> {
-    return evaluatePosition(worker, fen, depth);
-}
-
-function sideRelative(cp: number, isWhite: boolean): number {
-    return isWhite ? cp : -cp;
-}
-
 // ----- subcomponents -----
 
-function BoardView({ fen, lastMove, hint }: { fen: string; lastMove?: string; hint?: string | null }) {
-    // Lightweight CSS-grid board. We use chess.js for legality, not for
-    // the board rendering (avoiding the react-chessboard dep here keeps
-    // the analysis feature dependency-light; the project still has
-    // react-chessboard installed and we can swap later).
-    const c = useMemo(() => new Chess(fen), [fen]);
-    const board = c.board();
-    const lastMoveSquares = useMemo(() => {
-        if (!lastMove) return new Set<string>();
-        const chess = new Chess();
-        try {
-            const m = chess.move(lastMove);
-            if (!m) return new Set<string>();
-            return new Set([m.from, m.to]);
-        } catch {
-            return new Set<string>();
-        }
-    }, [lastMove]);
-
+function BoardView({ fen, lastMove, hint, bestArrow, boardOrientation }: { fen: string; lastMove?: { from: string; to: string }; hint?: string | null; bestArrow?: { startSquare: string; endSquare: string; color: string }; boardOrientation: "white" | "black" }) {
     const hintSquares = useMemo(() => {
         if (!hint) return new Set<string>();
         return new Set([hint.slice(0, 2), hint.slice(2, 4)]);
     }, [hint]);
 
     return (
-        <div className="w-full max-w-[480px] mx-auto aspect-square grid grid-cols-8 grid-rows-8 border border-neutral-300 dark:border-neutral-700">
-            {board.flatMap((row, r) =>
-                row.map((sq, f) => {
-                    const file = String.fromCharCode(97 + f);
-                    const rank = 8 - r;
-                    const squareName = `${file}${rank}`;
-                    const isLight = (f + r) % 2 === 0;
-                    const isLast = lastMoveSquares.has(squareName);
-                    const isHint = hintSquares.has(squareName);
-                    return (
-                        <div
-                            key={`${r}-${f}`}
-                            className={`relative flex items-center justify-center text-3xl ${isLight ? "bg-amber-100 dark:bg-amber-100" : "bg-amber-700 dark:bg-amber-700"} ${isLast ? "ring-2 ring-yellow-400" : ""} ${isHint ? "ring-2 ring-blue-500" : ""}`}
-                        >
-                            {sq && (
-                                    <span className={`select-none ${sq.color === "w" ? "text-white drop-shadow-[0_0_1px_black]" : "!text-neutral-950 dark:!text-neutral-950"}`}>
-                                    {PIECE_GLYPHS[sq.color === "w" ? "w" : "b"][sq.type]}
-                                </span>
-                            )}
-                        </div>
-                    );
-                })
-            )}
+        <div className="mx-auto aspect-square w-full max-w-[min(500px,calc(100vh-230px))] overflow-hidden rounded-lg border border-slate-200 shadow-sm">
+            <Chessboard options={{
+                position: fen,
+                boardOrientation,
+                animationDurationInMs: 200,
+                allowDragging: false,
+                boardStyle: { borderRadius: "0px" },
+                darkSquareStyle: { backgroundColor: "#779952" },
+                lightSquareStyle: { backgroundColor: "#edeed1" },
+                squareStyles: {
+                    ...(lastMove ? {
+                        [lastMove.from]: { backgroundColor: "rgba(255, 255, 0, 0.25)" },
+                        [lastMove.to]: { backgroundColor: "rgba(255, 255, 0, 0.35)" },
+                    } : {}),
+                    ...Array.from(hintSquares).reduce<Record<string, React.CSSProperties>>((styles, square) => {
+                        styles[square] = { boxShadow: "inset 0 0 0 4px rgba(59, 130, 246, 0.8)" };
+                        return styles;
+                    }, {}),
+                },
+                arrows: bestArrow ? [bestArrow] : [],
+                allowDrawingArrows: false,
+                showNotation: true,
+            }} />
+        </div>
+    );
+}
+function EvalBar({ evaluation, mate }: { evaluation: number; mate?: number }) {
+    const clamped = Math.max(-1000, Math.min(1000, evaluation));
+    const whitePercent = 50 + (clamped / 1000) * 50;
+    const label = mate === undefined ? `${evaluation >= 0 ? "+" : ""}${(evaluation / 100).toFixed(1)}` : `M${Math.abs(mate)}`;
+    return (
+        <div className="flex w-7 shrink-0 flex-col items-center gap-2">
+            <div className="relative h-full min-h-0 w-5 flex-1 overflow-hidden rounded-sm border border-slate-200 bg-slate-800 shadow-inner">
+                <motion.div
+                    animate={{ height: `${whitePercent}%` }}
+                    transition={{ duration: 0.45, ease: "easeOut" }}
+                    className="absolute bottom-0 left-0 right-0 bg-white"
+                />
+                <div className="absolute inset-x-0 top-1/2 border-t border-slate-500/50" />
+            </div>
+            <span className="font-mono text-[11px] font-medium tabular-nums text-slate-600">{label}</span>
         </div>
     );
 }
 
-const PIECE_GLYPHS: Record<"w" | "b", Record<string, string>> = {
-    w: { k: "♔", q: "♕", r: "♖", b: "♗", n: "♘", p: "♙" },
-    b: { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" },
-};
-
-function EvalBar({ evals, ply, currentEval }: { evals: number[]; ply: number; currentEval: number | null }) {
-    const storedEval = ply === 0 ? 30 : evals[Math.max(0, ply - 1)];
-    // Stored evaluations are side-to-move-relative; convert them to White's view.
-    const cp = currentEval ?? (storedEval === undefined ? 30 : (ply % 2 === 1 ? storedEval : -storedEval));
-    const winChance = 50 + 50 * Math.tanh(cp / 400);
+function AccuracySummary({ moves }: { moves: EvaluatedMove[] }) {
+    const groups = [
+        { label: "White", offset: 0 },
+        { label: "Black", offset: 1 },
+    ];
     return (
-        <div className="flex flex-col items-center">
-            <div className="relative w-6 h-[480px] bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
-                <motion.div
-                    animate={{ height: `${winChance}%` }}
-                    transition={{ type: "spring", stiffness: 80, damping: 15 }}
-                    className="absolute top-0 left-0 right-0 bg-white"
-                />
-                <motion.div
-                    animate={{ height: `${100 - winChance}%` }}
-                    transition={{ type: "spring", stiffness: 80, damping: 15 }}
-                    className="absolute bottom-0 left-0 right-0 bg-neutral-900"
-                />
-            </div>
-            <div className="text-xs text-muted-foreground mt-2">
-                {cp > 0 ? `+${(cp / 100).toFixed(1)}` : (cp / 100).toFixed(1)}
-            </div>
+        <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+            {groups.map(({ label, offset }) => {
+                const playerMoves = moves.filter((move) => (move.ply - 1) % 2 === offset);
+                const losses = playerMoves.map((move) => Math.max(0, move.evalBefore - move.evalAfter));
+                const averageLoss = losses.length ? Math.round(losses.reduce((sum, loss) => sum + loss, 0) / losses.length) : 0;
+                const count = (classification: string) => playerMoves.filter((move) => move.classification === classification).length;
+                return (
+                    <div key={label} className="rounded-md bg-white p-2 text-xs text-slate-600">
+                        <div className="font-medium text-slate-800">{label}</div>
+                        <div>Avg loss: {averageLoss} cp</div>
+                        <div>?? {count("blunder")} · ? {count("mistake")} · ?! {count("inaccuracy")}</div>
+                    </div>
+                );
+            })}
         </div>
     );
 }
 
-function ResultCard({ doc, username }: { doc: AnalysisDoc; username?: string }) {
-    const isWhite = username?.toLowerCase() === doc.white.username.toLowerCase();
-    const result = isWhite ? doc.white.result : doc.black.result;
-    const normalized = result.toLowerCase();
-    const outcome = normalized === "win"
-        ? "Won"
-        : ["checkmated", "resigned", "timeout", "abandoned", "lose"].includes(normalized)
-            ? "Lost"
-            : "Draw";
-    const color = outcome === "Won" ? "text-green-600" : outcome === "Lost" ? "text-red-600" : "text-yellow-600";
-
-    return (
-        <Card>
-            <CardContent className="p-4 text-center">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Game result</p>
-                <p className={`mt-1 text-2xl font-bold ${color}`}>{outcome}</p>
-                <p className="text-sm text-muted-foreground">Final position reached</p>
-            </CardContent>
-        </Card>
-    );
-}
-
-function EvalGraph({ evals, ply }: { evals: number[]; ply: number }) {
+function EvalGraph({ evals, ply, onSelect }: { evals: number[]; ply: number; onSelect: (ply: number) => void }) {
     if (evals.length === 0) {
         return <div className="text-xs text-muted-foreground">Running analysis…</div>;
     }
@@ -690,7 +676,10 @@ function EvalGraph({ evals, ply }: { evals: number[]; ply: number }) {
     const toY = (v: number) => H / 2 - (v / max) * (H / 2 - 4);
     const path = clamped.map((v, i) => `${i === 0 ? "M" : "L"} ${i * stepX} ${toY(v)}`).join(" ");
     return (
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-20">
+        <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full cursor-pointer" onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            onSelect(Math.round(((event.clientX - rect.left) / rect.width) * (clamped.length - 1)));
+        }}>
             <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="currentColor" strokeOpacity="0.2" strokeWidth="1" />
             <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" />
             <line

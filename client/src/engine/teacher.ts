@@ -4,7 +4,7 @@
  * no network calls — easy to extend with new themes.
  *
  * Input: a sequence of moves with their before/after centipawn evals
- * (side-to-move-relative: positive = side-to-move winning).
+ * from the original mover's perspective (positive = good for the mover).
  *
  * Output: one EvaluatedMove per ply, with classification, theme, and
  * explanation strings ready to render in the analysis UI.
@@ -36,12 +36,12 @@ export interface RawEvaluatedMove {
     fen: string;            // FEN BEFORE the move
     playedMove: string;     // SAN
     bestMove: string;       // SAN
-    evalBefore: number;     // centipawns, side-to-move-relative
-    evalAfter: number;      // centipawns, side-to-move-relative after played move
-    bestEvalAfter: number;  // centipawns, side-to-move-relative after best move
+    evalBefore: number;     // centipawns, from the mover's perspective
+    evalAfter: number;      // centipawns, from the mover's perspective after played move
+    bestEvalAfter: number;  // centipawns, from the mover's perspective after best move
     mateBefore?: number;    // mate in N for side-to-move, if any
-    mateAfter?: number;     // mate in N after the PLAYED move (opponent's perspective)
-    bestMateAfter?: number; // mate in N after the BEST move (opponent's perspective), if any
+    mateAfter?: number;     // mate in N after the PLAYED move, normalized to mover perspective
+    bestMateAfter?: number; // mate in N after the BEST move, normalized to mover perspective
     timeRemainingMs?: number; // clock time before this move
 }
 
@@ -63,10 +63,8 @@ export interface EvaluatedMove {
  * played move was compared to the engine's best move, both converted
  * to the mover's own perspective.
  *
- * evalAfter / bestEvalAfter are side-to-move-relative for whoever
- * moves NEXT (the opponent), since the turn has switched after either
- * move. We flip both back to the original mover's perspective before
- * comparing them — this is what makes centipawn-loss meaningful.
+ * evalAfter / bestEvalAfter are already normalized to the original
+ * mover's perspective, so centipawn loss is a direct subtraction.
  */
 export function classifyMove(raw: RawEvaluatedMove, bestIsMate: boolean): Classification {
     // Lost a forced mate that existed before the move -> always a blunder
@@ -83,13 +81,9 @@ export function classifyMove(raw: RawEvaluatedMove, bestIsMate: boolean): Classi
         return "best";
     }
 
-    // Flip both to the mover's own perspective
-    const moverEvalAfterPlayed = -raw.evalAfter;
-    const moverEvalAfterBest = -raw.bestEvalAfter;
-
     // How much worse was the played move than the best move,
     // measured in the mover's own favor (positive = lost ground)
-    const cpLoss = moverEvalAfterBest - moverEvalAfterPlayed;
+    const cpLoss = raw.bestEvalAfter - raw.evalAfter;
 
     if (cpLoss >= 300) return "blunder";
     if (cpLoss >= 100) return "mistake";
@@ -378,7 +372,7 @@ export function annotateMoves(rawMoves: RawEvaluatedMove[]): EvaluatedMove[] {
 
         // Centipawn loss from the mover's own perspective (positive =
         // lost ground), consistent with classifyMove's cpLoss.
-        const deltaCp = -raw.bestEvalAfter - -raw.evalAfter;
+        const deltaCp = raw.bestEvalAfter - raw.evalAfter;
         const explanation = effectiveTheme !== "none"
             ? explainMove(effectiveTheme, raw.playedMove, raw.bestMove, deltaCp)
             : (classification === "blunder" || classification === "mistake" || classification === "inaccuracy")
