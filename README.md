@@ -205,14 +205,30 @@ Protected routes require `Authorization: Bearer <access-token>`.
 
 ### Play with Engine
 
-The `/play` board is locked until the player selects **Play**. During a game it supports:
+The `/play` page is a self-contained practice board for playing against the built-in engine. The board is locked until the player selects **Play**, which prevents accidental moves while the game settings are being configured.
+
+#### Game flow
+
+1. Choose whether to play as White or Black.
+2. Select Easy, Medium, or Hard difficulty and configure the bot move delay.
+3. Select **Play** to unlock the board and start the session.
+4. If Black is selected, the engine automatically makes the opening move as White.
+5. Make legal moves by selecting a piece and then selecting a highlighted destination square.
+6. Continue until checkmate, a draw, resignation, or a new game is started.
+
+#### Gameplay features
 
 - White or Black play, including an automatic engine opening move when playing Black
 - Easy, Medium, and Hard minimax difficulty levels
-- Click-to-select legal move indicators and move validation
-- Evaluation bar, numerical evaluation, move history, undo, board flipping, and focus mode
+- Click-to-select legal move indicators, capture outlines, selected-square highlighting, and move validation
+- Chess.com-inspired green and cream board styling with responsive square proportions
+- Evaluation bar with animated numerical evaluation after player and engine moves
+- Move history with review navigation, first/previous/next/latest controls, and automatic scrolling
+- Undo/takeback, board flipping, resign, reset, and play-again actions
 - Move, capture, check, and checkmate audio feedback with a sound toggle
-- Resign, play again, and local game-state persistence
+- Focus mode that hides the navbar and page heading to maximize board space
+- Authenticated player profile and StockBot opponent banners
+- Local game-state persistence for the board position, settings, orientation, move history, and status
 
 ### Game Analysis
 
