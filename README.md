@@ -23,6 +23,9 @@ This project combines a Node.js/Express backend with a React + Vite frontend to 
 - Authenticated user workflows with Google OAuth and JWT
 - Saved game analysis and notes
 - Stockfish browser engine analysis board
+- Play with Engine gameplay with minimax difficulty levels
+- Legal move indicators, evaluation bar, move sounds, focus mode, and local game persistence
+- Move-by-move classifications, clickable evaluation graph, hints, best-move arrows, and accuracy summaries
 - Feedback and contact form
 
 ## Tech Stack
@@ -48,6 +51,11 @@ This project combines a Node.js/Express backend with a React + Vite frontend to 
 - react-chessboard
 - Framer Motion / Motion
 - Sonner for notifications
+
+### Chess Engine
+- The `/play` experience uses material evaluation, piece-square tables, and alpha-beta minimax search.
+- Saved-game review uses Stockfish in a browser Web Worker and reports depth, centipawn, mate, and best-move results.
+- Batch analysis and interactive evaluation use separate worker instances so hints do not interrupt batch analysis.
 
 ## Repository Structure
 
@@ -185,6 +193,37 @@ The backend exposes route groups including:
 - `/health` for server health checks
 
 Protected routes require `Authorization: Bearer <access-token>`.
+
+## Main Frontend Routes
+
+| Route | Description |
+| --- | --- |
+| `/` | Search players and access profile, statistics, comparison, and insights views |
+| `/play` | Play against the built-in minimax engine |
+| `/analysis` | Browse authenticated saved-game analyses |
+| `/analysis/:gameId` | Review a game with Stockfish evaluation and move navigation |
+
+### Play with Engine
+
+The `/play` board is locked until the player selects **Play**. During a game it supports:
+
+- White or Black play, including an automatic engine opening move when playing Black
+- Easy, Medium, and Hard minimax difficulty levels
+- Click-to-select legal move indicators and move validation
+- Evaluation bar, numerical evaluation, move history, undo, board flipping, and focus mode
+- Move, capture, check, and checkmate audio feedback with a sound toggle
+- Resign, play again, and local game-state persistence
+
+### Game Analysis
+
+Selecting **Analyze** from the game list opens `/analysis/:gameId` and hides the navbar so the review board can use the full viewport. The review page provides:
+
+- Board styling consistent with `/play`, last-move highlighting, and orientation controls
+- First/previous/next/latest navigation, keyboard controls, clickable move rows, and hints
+- Stockfish depth, centipawn/mate evaluation, evaluation bar, graph navigation, and best-move arrows
+- Inaccuracy, mistake, and blunder classifications with symbols and explanations
+- Accuracy and average-loss summaries for both players
+- Persistent personal notes and visible evaluation-save errors
 
 ## Stockfish-Powered Engine Analysis
 
