@@ -43,6 +43,7 @@ import { AuthError } from "@/components/AuthError"
 import { ProfilePage } from "@/components/ProfilePage"
 import AnalysisPage from "@/components/AnalysisPage"
 import FloatingDockDemo from "@/components/floating-dock-demo"
+import PlayWithEngine from "@/components/PlayWithEngine"
 
 // --- Types ---
 import type { PlayerData, ComparisonData } from "@/types"
@@ -483,6 +484,7 @@ function App() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/auth/error" element={<AuthError />} />
       <Route path="/analysis/*" element={<AnalysisPage />} />
+      <Route path="/play" element={<PlayWithEngine />} />
     </Routes>
   )
 }
