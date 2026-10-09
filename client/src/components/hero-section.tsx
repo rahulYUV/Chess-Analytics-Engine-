@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
+import { ArrowRight, Swords } from "lucide-react"
+import { Link } from "react-router-dom"
 
 
 
@@ -15,7 +17,7 @@ export function HeroSection() {
             setIndex((prev) => (prev + 1) % words.length)
         }, 3000)
         return () => clearInterval(interval)
-    }, [])
+    }, [words.length])
 
     return (
         <div className="relative z-20 flex flex-col items-center justify-center pt-10 pb-6 text-center w-full max-w-5xl mx-auto">
@@ -31,6 +33,14 @@ export function HeroSection() {
 
                 {/* Main Heading */}
                 <div className="relative">
+                    <Link
+                        to="/play"
+                        className="mb-7 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 transition-colors hover:border-emerald-300 hover:bg-emerald-100"
+                    >
+                        <Swords className="h-4 w-4" />
+                        New feature: Play with Engine
+                        <ArrowRight className="h-4 w-4" />
+                    </Link>
                     <h1 className="text-5xl md:text-7xl font-bold tracking-tight text-neutral-800 dark:text-neutral-100 leading-[1.1]">
                         Unlock Your <br className="hidden md:block" />
                         <span className="relative inline-block pb-1">
