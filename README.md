@@ -1,136 +1,243 @@
-# Chess Stats Application
+# Chess Analytics Engine
+
+A full-stack TypeScript application for exploring Chess.com player data, comparing players, reviewing opening trends, and analyzing saved games with a Stockfish-powered board.
 
 ## Overview
-A full-stack web application designed to provide detailed analytics and insights for Chess.com players.
-It allows users to view player profiles, compare statistics between two players, explore opening repertoires, and visualize activity heatmaps.
 
-![Main Image](https://drive.google.com/thumbnail?id=1rXazQs4IoFFcLrqyLZqVIEHYMNxzgoVc&sz=w1000)
+This project combines a Node.js/Express backend with a React + Vite frontend to provide a complete Chess analytics workflow:
 
+- Search and view Chess.com player profiles
+- Compare two players side by side
+- Review insights such as activity heatmaps, win rates, and opening stats
+- Browse recent games and archive data for a username
+- Authenticate users and save analysis sessions
+- Analyze a game with a chess engine and review evaluated moves
 
-![Second Image](https://drive.google.com/thumbnail?id=1Bs064ajTw_iCvaqRuOt4_d6-Nnab5zui&sz=w1000)
+## Key Features
 
-
-## Features
-- **Player Profile**: View detailed statistics, ratings, and club memberships for any Chess.com user.
-- **Comparison Mode**: Compare key metrics and head-to-head history between two players.
-- **Insights Dashboard**: Visualize game activity with heatmaps, analyze win rates by color, and review opening performance.
-- **Opening Explorer**: Interactive chessboard to explore games played by the user, filtering by moves and results.
-- **Feedback System**: Integrated feedback form for user suggestions.
-
-
-![Third Image](https://drive.google.com/thumbnail?id=14Xn5E4ugOKEnCSMa-z6a0tbGzaZE2TlV&sz=w1000)
+- Player profile and stats dashboard
+- Two-player comparison views
+- Insights dashboard with activity heatmaps and win-rate summaries
+- Opening explorer and repertoire analysis
+- Game archive retrieval for recent Chess.com activity
+- Authenticated user workflows with Google OAuth and JWT
+- Saved game analysis and notes
+- Stockfish browser engine analysis board
+- Feedback and contact form
 
 ## Tech Stack
 
-### Frontend
-- **Framework**: React (v19) with Vite
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS, TailwindCss, CLSX, Class Variance Authority
-- **UI Components**: shadcn/ui, Radix UI primitives, Lucide React icons
-- **Animations**: Framer Motion, Canvas Confetti
-- **Charts**: Recharts
-- **Chess Logic**: Chess.js, React Chessboard
-- **Notifications**: Sonner
-
 ### Backend
-- **Runtime**: Node.js
-- **Framework**: Express.js
-- **Language**: TypeScript
-- **Database**: MongoDB 
-- **Caching**: Node-cache (In-memory caching)
-- **External API**: Chess Web API (Wrapper for Chess.com API)
+- Node.js
+- Express 5
+- TypeScript
+- MongoDB + Mongoose
+- Passport + Google OAuth
+- JWT access and refresh tokens
+- Node-cache in-memory caching
+- Chess.com public API integration via chess-web-api and direct archive requests
 
-## Code Structure
+### Frontend
+- React 19
+- Vite
+- TypeScript
+- Tailwind CSS
+- Radix UI
+- Recharts
+- Chess.js
+- react-chessboard
+- Framer Motion / Motion
+- Sonner for notifications
 
-### Root Directory (Backend)
-- **index.ts**: Main entry point for the Express server. Handles API routes, database connection, and caching logic.
-- **package.json**: Backend dependencies and scripts.
-- **tsconfig.json**: TypeScript configuration for the backend.
+## Repository Structure
 
-### Client Directory (Frontend)
-- **src/App.tsx**: Main application component handling routing and layout.
-- **src/components/**: Reusable UI components (e.g., charts, chessboard, feedback form).
-- **src/lib/**: Utility functions and helpers.
-- **src/types.ts**: TypeScript definitions for shared data structures.
+```text
+.
+├── index.ts                    # Express entry point
+├── package.json                # Backend scripts and dependencies
+├── tsconfig.json               # Backend TypeScript config
+├── test-db.ts                  # MongoDB connectivity smoke check
+├── get_avatars.js              # Standalone avatar utility
+├── README.md
+├── client/                     # React frontend
+│   ├── package.json
+│   ├── src/
+│   ├── public/
+│   └── vite.config.ts
+├── src/
+│   ├── config/                 # DB and Passport config
+│   ├── controllers/            # HTTP handlers
+│   ├── middleware/             # auth, rate limiting, DB readiness
+│   ├── models/                 # Mongoose schemas
+│   ├── routes/                 # Express routes
+│   ├── services/               # Chess.com / auth / cache logic
+│   └── utils/                  # helpers, JWT, chess utilities
+└── Chess_Stats_API.postman_collection.json
+```
 
-## Setup Instructions
+## Prerequisites
 
-### Prerequisites
-- Node.js (v18 or higher)
-- MongoDB instance (local or cloud)
+- Node.js 18 or newer
+- MongoDB instance or MongoDB Atlas cluster
+- A Chess.com username to query
+- Google OAuth credentials for login
 
-### Installation
+## Installation
 
-1. **Clone the repository**
-   
-2. **Install Backend Dependencies**
-   Navigate to the root directory:
-   ```bash
-   npm install
-   ```
+1. Clone the repository:
 
-3. **Install Frontend Dependencies**
-   Navigate to the client directory:
-   ```bash
-   cd client
-   npm install
-   ```
+```bash
+git clone <repo-url>
+cd Chess-Analytics-Engine-
+```
 
-### Environment Configuration
+2. Install backend dependencies:
 
-Create a `.env` file in the root directory with the following variables:
+```bash
+npm install
+```
+
+3. Install frontend dependencies:
+
+```bash
+cd client
+npm install
+```
+
+## Environment Variables
+
+Create a `.env` file in the project root with the following values:
 
 ```env
 PORT=3000
-MONGODB_URI=connection string to mongodb
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>/<database>
+GOOGLE_CLIENT_ID=<google-client-id>
+GOOGLE_CLIENT_SECRET=<google-client-secret>
+GOOGLE_CALLBACK_URL=http://localhost:3000/auth/google/callback
+JWT_ACCESS_SECRET=<long-access-secret>
+JWT_REFRESH_SECRET=<long-refresh-secret>
+JWT_ACCESS_EXPIRY=15m
+JWT_REFRESH_EXPIRY=7d
+CLIENT_URL=http://localhost:5173
+NODE_ENV=development
 ```
 
-### Running the Application
+The frontend also uses a `client/.env` file:
 
-1. **Start the Backend**
-   From the root directory:
-   ```bash
-   npm run dev
-   ```
-   The server will start on http://localhost:3000.
+```env
+VITE_API_URL=http://localhost:3000
+```
 
-2. **Start the Frontend**
-   From the client directory:
-   ```bash
-   npm run dev
-   ```
-   The application will be accessible at the URL provided by Vite (usually http://localhost:5173).
+> If the MongoDB URI is not set, the server will still start, but database-backed routes such as auth and comments will fail until MongoDB is available.
 
-## NPM Libraries Used
+## Running the App
 
-### Backend Dependencies
-- **chess-web-api**: Wrapper for interacting with the Chess.com public API.
-- **cors**: Middleware to enable Cross-Origin Resource Sharing.
-- **dotenv**: Loads environment variables from .env file.
-- **express**: Web framework for Node.js.
-- **mongoose**: MongoDB object modeling tool.
-- **node-cache**: Simple in-memory caching to improve performance and reduce API rate limiting.
-- **nodemon**: Utility that monitors for changes and automatically restarts the server.
-- **ts-node**: TypeScript execution engine for Node.js.
-- **typescript**: Typed superset of JavaScript.
+### Backend
 
-### Frontend Dependencies
-- **@radix-ui/**: Unstyled, accessible UI primitives for React.
-- **@tabler/icons-react**: Icon set.
-- **canvas-confetti**: Performant confetti animations.
-- **chess.js**: Library for chess move generation/validation.
-- **class-variance-authority**: Utility for creating variant-based component styles.
-- **clsx**: Utility for constructing className strings conditionally.
-- **lucide-react**: Icon library.
-- **motion**: Animation library for React (formerly Framer Motion).
-- **react**: Library for building user interfaces.
-- **react-chessboard**: Chessboard component for React.
-- **react-dom**: React package for working with the DOM.
-- **recharts**: Composable charting library.
-- **sonner**: Toast notification library.
-- **tailwind-merge**: Utility to merge Tailwind CSS classes without conflicts.
-- **tailwindcss-animate**: Tailwind plugin for animation utilities.
+From the project root:
 
-## Open Source
+```bash
+npm run dev
+```
 
-This is an open source project. Feel free to use or contribute.
+This starts the Express API on `http://localhost:3000`.
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd client
+npm run dev
+```
+
+Vite typically serves the app at `http://localhost:5173`.
+
+## Production Build
+
+### Backend
+
+```bash
+npm run build
+```
+
+### Frontend
+
+```bash
+cd client
+npm run build
+```
+
+### Linting
+
+```bash
+cd client
+npm run lint
+```
+
+## API Notes
+
+The backend exposes route groups including:
+
+- `/auth` for registration, login, Google OAuth, refresh, logout, and profile updates
+- `/player` for chess profile, stats, archives, comparisons, insights, and activity data
+- `/analysis` for authenticated saved-game analyses and evaluated moves
+- `/health` for server health checks
+
+Protected routes require `Authorization: Bearer <access-token>`.
+
+## Stockfish-Powered Engine Analysis
+
+The analysis experience is powered by a browser-based Stockfish 16 NNUE engine running inside a Web Worker. This keeps heavy engine computation off the main UI thread while allowing the app to evaluate positions, moves, and game states in real time.
+
+### How it works
+
+- The frontend creates a dedicated worker from `client/src/engine/stockfish.worker.ts`.
+- The worker initializes Stockfish, loads the NNUE weights, and sends a `ready` signal once it is prepared to receive commands.
+- Each position is analyzed by sending a FEN string and a target search depth. The worker returns engine lines such as `info depth ... pv ...` and the final `bestmove`.
+- The app uses those outputs to compute a centipawn evaluation, identify the best move, and compare it against the actual move played.
+- Each move is scored in terms of how much it deviates from the engine’s best continuation.
+
+### Evaluation pipeline
+
+The engine flow is intentionally layered:
+
+1. Parse the PGN with Chess.js
+2. Reconstruct the position for each move using FEN states
+3. Ask Stockfish for the best move and evaluation at the current position
+4. Compare the played move against the engine’s recommendation
+5. Classify the move as a blunder, mistake, inaccuracy, good move, or best move
+6. Surface a human-friendly explanation and visual signal in the analysis UI
+
+This is handled in the client engine pipeline under `client/src/engine/`, where the worker emits live evaluation data and the teaching layer converts raw engine output into player-friendly coaching feedback.
+
+### Why this matters
+
+Instead of simply showing a raw numeric score, the app turns engine analysis into a learning tool. It can answer questions like:
+
+- Was this move objectively best?
+- Did the player miss a tactical shot?
+- How much worse was the move compared to the engine line?
+- Which moves were critical turning points in the game?
+
+This makes the engine not just a calculator, but a move-review assistant that helps users understand the tactical and strategic quality of their play.
+
+## Key Architecture Notes
+
+- External Chess.com requests are wrapped in backend services and cached in memory for performance.
+- All public chess-data service methods use cache keys based on username or comparison request.
+- Google OAuth redirects through Passport and issues JWT access and refresh tokens.
+- The analysis workflow parses PGN data using Chess.js and runs engine evaluation via a dedicated Stockfish worker.
+- MongoDB is optional at startup, but required for auth and other database-backed features.
+
+## Troubleshooting
+
+- If MongoDB times out, verify the Atlas network settings and connection string.
+- If Google OAuth fails, ensure the callback URL matches your Google console configuration.
+- If the frontend cannot reach the API, check `VITE_API_URL` and the backend port.
+- If the analysis board shows no engine depth, inspect the browser console and ensure the worker has started correctly.
+
+## Notes
+
+- There is no automated test suite in this repository; manual verification is done via local development servers and the Postman collection.
+- The app is designed for local development and experimentation, with `.env` values kept out of source control.
