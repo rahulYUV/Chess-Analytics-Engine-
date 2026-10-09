@@ -3,11 +3,12 @@ import { useAuth } from "../contexts/AuthContext";
 import { GoogleLoginButton } from "./GoogleLoginButton";
 import { AuthModal } from "./AuthModal";
 import { UserMenu } from "./UserMenu";
-import { Bell, LineChart } from "lucide-react";
+import { Bell, LineChart, Swords } from "lucide-react";
 import { motion } from "motion/react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 export const Navbar = () => {
+    const location = useLocation();
     const { isAuthenticated, isLoading, user } = useAuth();
     const [authOpen, setAuthOpen] = useState(false);
     const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -37,7 +38,7 @@ export const Navbar = () => {
 
                     {/* Navigation Links - Center */}
                     <div className="hidden md:flex items-center gap-8">
-                        <NavLink to="/" active>
+                        <NavLink to="/" active={location.pathname === "/"}>
                             Home
                         </NavLink>
                         <NavLink href="#analytics">Analytics</NavLink>
@@ -51,6 +52,16 @@ export const Navbar = () => {
                                 Analyze
                             </Link>
                         )}
+                        <Link
+                            to="/play"
+                            className={`text-sm font-medium transition-colors hover:text-neutral-900 dark:hover:text-white inline-flex items-center gap-1.5 ${location.pathname.startsWith("/play")
+                                ? "text-emerald-700 dark:text-emerald-400"
+                                : "text-neutral-600 dark:text-neutral-400"
+                                }`}
+                        >
+                            <Swords className="h-4 w-4" />
+                            Play
+                        </Link>
                     </div>
 
                     {/* Right Side - Auth & User */}
