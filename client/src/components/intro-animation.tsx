@@ -1,6 +1,9 @@
+"use client";
+
 import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { Crown } from "lucide-react";
+import { BTree } from "anatomy-figures";
 
 interface IntroAnimationProps {
     onComplete: () => void;
@@ -15,17 +18,16 @@ const T = {
     drawDur: 0.95,    // how long the draw takes
     land: 1.3,        // crown lands on the peak
     word: 1.4,        // wordmark begins
-    split: 2.35,      // the screen cuts diagonally and the halves slide apart
+    tree: 1.9,        // B-tree figure fades in (below the wordmark)
+    split: 3.2,       // the screen cuts diagonally and the halves slide apart
     splitDur: 0.6,    // how long the halves take to leave
-    total: 3.0,       // when onComplete fires (after the halves are gone)
+    total: 3.9,       // when onComplete fires (after the halves are gone)
 };
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
 /* --------------------------- Graph geometry ------------------------- */
 
-// Rating history, in a 360 x 200 box (smaller y = higher rating).
-// Dips below the midline first (eval bar swings to black), then climbs to a peak.
 const W = 360;
 const H = 200;
 const P: [number, number][] = [
@@ -99,7 +101,6 @@ function useDraw(start: number, duration: number, reduced: boolean) {
 
 /* ------------------------- Corner checkerboards --------------------- */
 
-// Squares fade in starting from the screen corner and spread inward.
 function CornerBoard({ fromBottomRight = false }: { fromBottomRight?: boolean }) {
     const squares = Array.from({ length: 36 }, (_, i) => {
         const row = Math.floor(i / 6);
@@ -131,7 +132,6 @@ const wordContainer = {
     exit: { transition: { staggerChildren: 0.02, staggerDirection: -1 } },
 };
 
-// Letters rise out of a clipped line — feels like a mask reveal, not a fade.
 const letter = {
     hidden: { y: "110%" },
     show: { y: "0%", transition: { duration: 0.55, ease: EASE } },
@@ -159,7 +159,6 @@ function StatsCard({ t, reduced, uid }: { t: number; reduced: boolean; uid: stri
     const line = toPath(pts);
     const area = `${line} L${tip[0].toFixed(1)},${H} L${P[0][0]},${H} Z`;
 
-    // Eval bar follows the height of the line: middle = equal, top = winning
     const fill = Math.min(100, Math.max(0, (100 * (H - tip[1])) / H));
     const e = ((fill - 50) / 50) * 6;
     const sign = e >= 0.05 ? "+" : e <= -0.05 ? "\u2212" : "";
@@ -172,7 +171,6 @@ function StatsCard({ t, reduced, uid }: { t: number; reduced: boolean; uid: stri
 
     return (
         <div className="relative">
-            {/* Glow that blooms when the crown lands */}
             {!reduced && (
                 <motion.div
                     initial={{ opacity: 0, scale: 0.7 }}
@@ -333,8 +331,6 @@ function RatingLine({ t, base, reduced }: { t: number; base: number; reduced: bo
 
 /* ------------------------------ Scene ------------------------------- */
 
-// The whole intro screen. It is rendered twice (one copy per half of the
-// diagonal cut) so both halves always show exactly the same frame.
 function Scene({
     t,
     base,
@@ -348,7 +344,7 @@ function Scene({
 }) {
     return (
         <div className="absolute inset-0 flex flex-col items-center justify-center overflow-hidden bg-white text-black">
-            {/* Faint grid that matches the site background */}
+            {/* Faint grid */}
             <div
                 className="pointer-events-none absolute inset-0 opacity-40"
                 style={{
@@ -360,7 +356,7 @@ function Scene({
                 }}
             />
 
-            {/* Checkerboard corners: top-left and bottom-right */}
+            {/* Checkerboard corners */}
             {!reduced && (
                 <>
                     <motion.div
@@ -382,7 +378,7 @@ function Scene({
                 </>
             )}
 
-            <div className="relative flex flex-col items-center gap-8">
+            <div className="relative flex flex-col items-center gap-6">
                 <StatsCard t={t} reduced={reduced} uid={uid} />
 
                 <motion.div
@@ -406,6 +402,16 @@ function Scene({
 
                     <RatingLine t={t} base={base} reduced={reduced} />
                 </motion.div>
+
+                {/* B-tree figure, below the wordmark */}
+                <motion.div
+                    initial={reduced ? false : { opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: T.tree, duration: 0.6, ease: EASE }}
+                    className="pointer-events-none w-[min(70vw,260px)]"
+                >
+                    <BTree theme="light" tokens={{ "--anatomy-lit": "#16a34a" }} />
+                </motion.div>
             </div>
         </div>
     );
@@ -413,7 +419,6 @@ function Scene({
 
 /* ------------------------- Diagonal cut halves ---------------------- */
 
-// Cut runs from the bottom-left corner to the top-right corner.
 const HALVES = [
     { clip: "polygon(0 0, 100% 0, 0 100%)", dir: -1 },      // upper-left half
     { clip: "polygon(100% 0, 100% 100%, 0 100%)", dir: 1 }, // lower-right half
@@ -425,11 +430,8 @@ export function IntroAnimation({ onComplete }: IntroAnimationProps) {
     const reduced = !!useReducedMotion();
     const t = useDraw(T.drawStart, T.drawDur, reduced);
 
-    // Random starting rating so every load feels a little different
     const [base] = useState(() => 800 + Math.floor(Math.random() * 400));
 
-    // Keep the latest callback without restarting the timer if the parent
-    // passes an inline function, and make sure it only ever fires once.
     const cbRef = useRef(onComplete);
     cbRef.current = onComplete;
     const doneRef = useRef(false);
@@ -443,7 +445,6 @@ export function IntroAnimation({ onComplete }: IntroAnimationProps) {
     useEffect(() => {
         const id = setTimeout(finish, reduced ? 400 : T.total * 1000);
 
-        // Let people skip the intro with Escape / Enter / Space
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape" || e.key === "Enter" || e.key === " ") finish();
         };
@@ -467,12 +468,9 @@ export function IntroAnimation({ onComplete }: IntroAnimationProps) {
             transition={{ duration: 0.3 }}
         >
             {reduced ? (
-                // Reduced motion: single static scene, no slicing
                 <Scene t={t} base={base} reduced uid="a" />
             ) : (
                 <>
-                    {/* Solid backing so no hairline seam shows along the cut
-                        before the halves start moving */}
                     <motion.div
                         className="absolute inset-0 bg-white"
                         initial={{ opacity: 1 }}
@@ -480,7 +478,6 @@ export function IntroAnimation({ onComplete }: IntroAnimationProps) {
                         transition={{ delay: T.split, duration: 0.01 }}
                     />
 
-                    {/* The two halves of the screen, sliding apart along the cut */}
                     {HALVES.map(({ clip, dir }, i) => (
                         <motion.div
                             key={i}
